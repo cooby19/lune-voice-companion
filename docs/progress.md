@@ -5,7 +5,7 @@
 | 里程碑 | 狀態 | Gate 證據 |
 |---|---|---|
 | M0 | 完成 | uv／Python 3.12、CI、隱私邊界、繁中文件、12 tests、secret scan、公開 repo／`main` |
-| M0.5 | 待處理 | GPT worker 安全與效能 spike |
+| M0.5 | 完成 | 17 個 spike tests；程式化 file／network denial probe 通過；缺私人資產時固定 AVSpeech |
 | M1 | 待處理 | 音訊生命週期與 VAD 邊界 fixtures |
 | M2 | 待處理 | MLX Whisper final-only 與 generation 作廢 |
 | M3 | 待處理 | Responses provider、三句 gate、取消與費用策略 |
