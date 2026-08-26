@@ -19,6 +19,18 @@
 - 唯一的 generation coordinator 在插話或輸出裝置切換後，統一作廢舊 STT、模型事件、
   工具提案與 PCM。
 
+## STT 模型與取消邊界
+
+- STT 固定為 `mlx-community/whisper-large-v3-turbo-q4` revision
+  `660c343bbf4e52ac257f0b7d952e5388e6f93bef`；`config.json` 與 `weights.npz` 的
+  SHA-256 編譯於 public pin，私人 manifest 必須逐項相符。
+- Runtime 只把驗證過的本機絕對目錄交給 `mlx-whisper`，不允許 repo ID 或隱式下載。
+- 對外只輸出 final transcript。同步 native inference 進入 thread 後不假裝能強制取消；
+  generation fence 會在接受、開始推論、推論回傳／拋錯與下游 callback 前作廢舊 epoch。
+- 同時間只允許一個 running inference 與一個 pending request；pending 採同 generation
+  latest-wins。`close()` 停止 Lune 管理的 asyncio worker，已進 native code 的 thread 自然結束，
+  其結果不得輸出。
+
 ## 私人資料
 
 - 私人資料根目錄：`~/Library/Application Support/Lune/`。

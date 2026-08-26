@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 BYTES_PER_SAMPLE: Final[int] = 2
@@ -21,7 +21,7 @@ def milliseconds_to_samples(milliseconds: int, sample_rate: int) -> int:
 class AudioSpan:
     """A contiguous PCM region using [start_sample, end_sample) coordinates."""
 
-    pcm: bytes
+    pcm: bytes = field(repr=False)
     start_sample: int
     end_sample: int
     generation_id: int

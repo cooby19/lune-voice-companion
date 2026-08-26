@@ -51,6 +51,39 @@ Application Support 中的私人副本。
 預設模型為 `gpt-5.6-terra`。只有在第一句尚未送往播放前發生一次暫時錯誤，
 或本機每月費用策略達到警戒線時，才改用 `gpt-5.6-luna`。
 
+## 本機語音辨識模型
+
+M2 固定使用
+[`mlx-community/whisper-large-v3-turbo-q4`](https://huggingface.co/mlx-community/whisper-large-v3-turbo-q4/tree/660c343bbf4e52ac257f0b7d952e5388e6f93bef)
+的 immutable revision `660c343bbf4e52ac257f0b7d952e5388e6f93bef`。Runtime 不會把 Hugging Face
+repo ID 交給 `mlx-whisper`，也不會隱式下載模型；缺少 optional dependency、manifest 或任一
+模型檔時，只會回報 `setup_required`。
+
+模型目錄固定為 `~/Library/Application Support/Lune/models/whisper/`，只允許目前使用者
+存取。放置 `config.json` 與 `weights.npz` 後，建立權限 `0600` 的 `manifest.json`：
+
+```json
+{
+  "schema_version": 1,
+  "model_id": "mlx-community/whisper-large-v3-turbo-q4",
+  "revision": "660c343bbf4e52ac257f0b7d952e5388e6f93bef",
+  "files": [
+    {
+      "relative_path": "config.json",
+      "sha256": "538e24557b8f9bc504700add5e7bbe32087c2353001ff563e64772ad4398671a"
+    },
+    {
+      "relative_path": "weights.npz",
+      "sha256": "862bbc832b05f3f4ec19dd632b701d61a6d3f5c7906360a10d72a79870642a80"
+    }
+  ]
+}
+```
+
+`mlx-whisper` 只在第一次真實推論時 lazy import；基本安裝、公開測試與 module import 都不需要
+`mlx` extra。同步 native inference 會在背景 thread 自然完成；generation 變更或 `close()`
+會作廢結果，但不宣稱能強制終止已進入 native code 的 thread。
+
 ## 隱私與私人聲線資產
 
 禁止提交 `kernel.yaml`、`config.toml`、資料庫、金鑰、裝置識別資料、完整訪談、
@@ -76,7 +109,7 @@ uv run python scripts/secret_scan.py
 
 - [`docs/progress.md`](docs/progress.md)：里程碑與 gate 證據
 - [`docs/project-decisions.md`](docs/project-decisions.md)：淨化後的公開決策
-- [`docs/handoff-m2-m8.md`](docs/handoff-m2-m8.md)：M1 完成後的 M2–M8 實作規劃與交接
+- [`docs/handoff-m2-m8.md`](docs/handoff-m2-m8.md)：M2 public gate 後的 M3–M8 實作規劃與交接
 
 ## 疑難排解
 
