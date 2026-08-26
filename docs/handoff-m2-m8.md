@@ -2,9 +2,9 @@
 
 更新日期：2026-08-27
 
-本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2 本機 public gate 結果。GitHub
-CLI 需重新登入後才能 push／確認 CI；完成遠端 gate 後，後續聊天室應從 M3 開始。M2 local
-model／私人語料 gate 尚未執行，不得誤認為已通過。
+本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2 本機 public gate 結果。M2
+commit 已 push，但 GitHub Actions API 尚未為該 push 建立 run；完成遠端 gate 後，後續聊天室
+應從 M3 開始。M2 local model／私人語料 gate 尚未執行，不得誤認為已通過。
 
 ## 交接基準
 
@@ -14,7 +14,9 @@ model／私人語料 gate 尚未執行，不得誤認為已通過。
 | 分支 | `main` |
 | M1 commit | `89d599f`（`M1: add sample-accurate local audio policy`） |
 | M1 CI | [GitHub Actions #32982714128](https://github.com/cooby19/lune-voice-companion/actions/runs/32982714128)，已通過 |
-| 本機／CI gate | Ruff、格式、mypy、50 項測試、secret scan、import／self-test，已通過 |
+| M1 本機／CI gate | Ruff、格式、mypy、50 項測試、secret scan、import／self-test，已通過 |
+| M2 commit | `ebe262d`（`M2: add generation-fenced final-only STT`），已 push |
+| M2 CI | GitHub Actions API 尚未建立 run，未驗收 |
 | 下一階段 | M3：Responses provider、句數與費用策略 |
 
 目前完成 M0、M0.5、M1 與 M2 public gate。M3–M8 尚未實作。本機可能已有私人設定，但私人 persona、
@@ -107,7 +109,7 @@ CoreAudio stream owner 仍須在 M6／M7 整合。
 
 ## M2：MLX Whisper final-only
 
-狀態：本機 public gate 已完成，待 push／CI。已固定 upstream revision 與
+狀態：本機 public gate 已完成且 commit 已 push；CI run 尚未建立。已固定 upstream revision 與
 `config.json`／`weights.npz` SHA-256，
 實作 final-only typed event、四層 generation fence、容量 1 的 latest-wins pending、lazy
 optional import 與 bounded `close()`。中文／英文／中英混流私人語料與本機模型效能 gate
