@@ -1,0 +1,30 @@
+schema_version = 1
+
+[models]
+primary = "gpt-5.6-terra"
+fallback = "gpt-5.6-luna"
+reasoning_effort = "none"
+max_output_tokens = 192
+
+[audio]
+sample_rate = 16000
+channels = 1
+turn_start_ms = 100
+barge_in_ms = 300
+pre_roll_ms = 350
+end_silence_ms = 350
+
+[budget]
+timezone = "Asia/Taipei"
+twd_per_usd = 33.0
+fallback_at_twd = 700.0
+lock_at_twd = 900.0
+
+[privacy]
+store_openai_responses = false
+telemetry = false
+tracing = false
+
+[tts]
+preferred_backend = "avspeech"
+gpt_worker_python = "/usr/local/bin/python3.10"

@@ -1,0 +1,80 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lune-voice-companion"
+version = "0.1.0"
+description = "A local-first macOS menu-bar voice companion"
+readme = "README.md"
+requires-python = "==3.12.*"
+license = "MIT"
+authors = [{ name = "Lune contributors" }]
+dependencies = [
+  "keyring==25.6.0",
+  "numpy==2.2.6",
+  "openai==2.8.1",
+  "pipecat-ai[openai]==1.7.0",
+  "platformdirs==4.4.0",
+  "pyaudio==0.2.14",
+  "pydantic==2.12.3",
+  "pyobjc-framework-AVFoundation==11.1; sys_platform == 'darwin'",
+  "pyobjc-framework-CoreAudio==11.1; sys_platform == 'darwin'",
+  "pyobjc-framework-Security==11.1; sys_platform == 'darwin'",
+  "pyyaml==6.0.3",
+  "rumps==0.4.0; sys_platform == 'darwin'",
+  "websockets==15.0.1",
+]
+
+[project.optional-dependencies]
+mlx = [
+  "mlx-whisper==0.4.3; platform_machine == 'arm64' and sys_platform == 'darwin'",
+  "sentence-transformers==5.1.2",
+]
+build = ["py2app==0.28.10; sys_platform == 'darwin'"]
+dev = [
+  "mypy==1.18.2",
+  "pytest==8.4.2",
+  "pytest-asyncio==1.2.0",
+  "ruff==0.14.3",
+  "types-pyyaml==6.0.12.20250915",
+]
+
+[project.scripts]
+lune = "lune.cli:main"
+lune-engine = "lune.engine:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lune"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "S", "RUF"]
+ignore = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["lune"]
+warn_unused_ignores = true
+
+[tool.uv]
+default-groups = ["dev"]
+
+[dependency-groups]
+dev = [
+  "mypy==1.18.2",
+  "pytest==8.4.2",
+  "pytest-asyncio==1.2.0",
+  "ruff==0.14.3",
+  "types-pyyaml==6.0.12.20250915",
+]
