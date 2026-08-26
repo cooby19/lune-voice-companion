@@ -76,6 +76,7 @@ uv run python scripts/secret_scan.py
 
 - [`docs/progress.md`](docs/progress.md)：里程碑與 gate 證據
 - [`docs/project-decisions.md`](docs/project-decisions.md)：淨化後的公開決策
+- [`docs/handoff-m2-m8.md`](docs/handoff-m2-m8.md)：M1 完成後的 M2–M8 實作規劃與交接
 
 ## 疑難排解
 
