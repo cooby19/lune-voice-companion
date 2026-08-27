@@ -455,6 +455,12 @@ Whisper 的 audio encoder 對固定 30 秒 mel 的耗時，就是延遲與音訊
 `AudioEncoder.__call__` 以 assert 要求輸入等於 positional embedding 形狀，因此需同時
 裁切兩者。
 
+上述為 encoder 層級的獨立量測。以 monkey-patch 方式把縮短的 window 套進上游
+`transcribe()` 做端到端驗證的嘗試**未完成**：反覆改變輸入形狀會讓 MLX 重複編譯，程序執行
+逾 22 分鐘仍未產出結果而被中止。因此「省約 950 ms」是依 encoder 曲線的推估，尚未取得
+端到端實測，也尚未驗證縮短 window 後辨識結果是否完全一致。真正整合時應在 Lune 自己的
+STT adapter 內固定單一 window 尺寸，避免形狀反覆變動。
+
 改善槓桿（皆為新的決策，未自行採用）：
 
 - **縮短輸入 window**：保留已 pin 的 `large-v3-turbo-q4` 與其準確率，預估省約 950 ms。
