@@ -29,6 +29,8 @@ M4 真實 E5、M5 私人 GPT 模型／效能 gate，以及 Qwen 的實機 gate �
 | M5 commit | `bd59740`（`M5: add isolated streaming TTS backends`），已 push |
 | M5 CI | [GitHub Actions #33073392282](https://github.com/cooby19/lune-voice-companion/actions/runs/33073392282)，已通過 |
 | 本地 LLM spike 公開 gate | 102 項 spike tests／328 項完整 pytest，已通過 |
+| 本地 LLM spike commit | `c0a348e`（`M6 prerequisite: add local Qwen spike gates`），已 push |
+| 本地 LLM spike CI | [GitHub Actions #33093928857](https://github.com/cooby19/lune-voice-companion/actions/runs/33093928857)，已通過 |
 | 下一階段 | 取得授權後執行本地 LLM spike 的 runtime／模型／硬體 gate；之後為 M6 中央取消與完整管線 |
 
 目前完成 M0、M0.5、M1、M2、M3、M4、M5 的 public／remote gate 與本地 LLM spike 的
