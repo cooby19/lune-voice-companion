@@ -2,9 +2,8 @@
 
 更新日期：2026-08-27
 
-本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2 remote gate 與 M3 本機 public
-gate。M3 commit／push／GitHub Actions 仍待完成；M2 local model／私人語料與 M3 私人人格
-rubric 尚未執行，不得誤認為已通過。
+本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2 與 M3 remote gate。後續聊天室
+應從 M4 開始；M2 local model／私人語料與 M3 私人人格 rubric 尚未執行，不得誤認為已通過。
 
 ## 交接基準
 
@@ -18,10 +17,11 @@ rubric 尚未執行，不得誤認為已通過。
 | M2 commit | `ebe262d`（`M2: add generation-fenced final-only STT`），已 push |
 | M2 CI | [GitHub Actions #32990678422](https://github.com/cooby19/lune-voice-companion/actions/runs/32990678422)，已通過 |
 | M3 本機 gate | 119 項 M3 tests／186 項完整 pytest；Responses registry、三句 gate、cancel/drain、fallback 與 reservation ledger，已通過 |
-| M3 remote gate | 待 commit、push 與 GitHub Actions；目前 GitHub CLI 認證失效 |
-| 下一階段 | M3 remote gate 完成後進入 M4：SQLite 記憶與關係狀態 |
+| M3 commit | `3d1e084`（`M3: add Responses and budget policy`），已 push |
+| M3 CI | [GitHub Actions #33033271278](https://github.com/cooby19/lune-voice-companion/actions/runs/33033271278)，已通過 |
+| 下一階段 | M4：SQLite 記憶與關係狀態 |
 
-目前完成 M0、M0.5、M1、M2 public／remote gate 與 M3 本機 public gate。M4–M8 尚未實作。
+目前完成 M0、M0.5、M1、M2 與 M3 public／remote gate。M4–M8 尚未實作。
 本機可能已有私人設定，但私人 persona、
 API key、模型、聲線、資料庫、逐字稿、裝置識別資料與診斷原始內容都不是交接文件或
 公開 repo 的一部分。
@@ -195,9 +195,9 @@ speech-end → final 的 p50／p95／max。報告不得包含音訊、逐字稿�
 
 ## M3：Responses provider、句數與費用
 
-狀態：本機 public gate 已完成；commit、push 與 GitHub Actions 尚待完成。沒有讀取私人 persona，
-12 題私人人格 rubric 未執行。M3 的 in-memory ledger 已具備 M4 寫入 SQLite 前所需的 attempt／
-價格版本／匯率契約，但跨重啟 confirmed cost 還原屬於 M4。
+狀態：public gate、commit、push 與 GitHub Actions 已完成。沒有讀取私人 persona，12 題私人
+人格 rubric 未執行。M3 的 in-memory ledger 已具備 M4 寫入 SQLite 前所需的 attempt／價格版本／
+匯率契約，但跨重啟 confirmed cost 還原屬於 M4。
 
 ### 實作順序
 
@@ -363,8 +363,8 @@ AVSpeech 預設。
 
 ```text
 先完整閱讀我提供的 PLAN.md，以及 repo 的 docs/handoff-m2-m8.md、
-docs/progress.md、docs/project-decisions.md。以已通過 M2 GitHub Actions 的最新 main 為基準，
-只實作 M3：Responses provider、三句 gate、取消 drain 與 700／900 費用策略。
-先查官方 OpenAI 與 Pipecat 1.7.0 文件，保留所有私人資料邊界；完成 targeted／full gate、
-更新進度、建立單一 commit、推送並確認 CI 後停止回報。不得批量刪除任何檔案或目錄。
+docs/progress.md、docs/project-decisions.md。以已通過 M3 GitHub Actions 的最新 main 為基準，
+只實作 M4：SQLite 記憶、summary、E5 retrieval、記憶工具、affinity audit 與逐筆刪除 CLI。
+先查相關官方文件與固定套件原始碼，保留所有私人資料邊界；完成 targeted／full gate、更新進度、
+建立單一 commit、推送並確認 CI 後停止回報。不得批量刪除任何檔案或目錄。
 ```
