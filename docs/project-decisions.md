@@ -14,7 +14,8 @@
 
 - Engine 使用 `uv` 管理的 Python 3.12、Pipecat 1.7.0 與 PyAudio／PortAudio。
 - 主模型／備援模型為 `gpt-5.6-terra`／`gpt-5.6-luna`，使用 Responses WebSocket、
-  `store=false`，並刻意限制文字 context。
+  `store=false`、`reasoning.effort=none`、最多 192 output tokens 與 standard pricing 對應的
+  `service_tier=default`，並刻意限制文字 context。
 - Pipeline 只接收有型別的 provider frame；公開 CI 使用 deterministic fake provider。
 - 唯一的 generation coordinator 在插話或輸出裝置切換後，統一作廢舊 STT、模型事件、
   工具提案與 PCM。
@@ -54,3 +55,6 @@
 - 每個雲端請求都先預留成本；達 NT$700 後所有新請求改用 Luna，達 NT$900 後本機
   鎖定所有雲端請求。
 - 取消後若 provider 沒有回報 usage，以完整預留額做保守估算。
+- M3 使用 OpenAI `2026-07-30` standard price card：Terra 每百萬 input／cached input／output
+  tokens 為 US$2／0.20／12，Luna 為 US$0.20／0.02／1.20；cache write 依官方規則以 uncached
+  input 的 1.25 倍計。每筆 reservation 保存價格版本與匯率，之後價格更新不得回寫舊紀錄。

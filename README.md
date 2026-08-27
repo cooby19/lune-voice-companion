@@ -50,6 +50,13 @@ Application Support 中的私人副本。
 
 預設模型為 `gpt-5.6-terra`。只有在第一句尚未送往播放前發生一次暫時錯誤，
 或本機每月費用策略達到警戒線時，才改用 `gpt-5.6-luna`。
+Responses request 固定使用 `store=false`、`reasoning.effort=none`、最多 192 output tokens 與
+standard pricing 對應的 `service_tier=default`。句數 gate 最多放行三個完整中英文句子；第三句
+完成後會取消並排空剩餘 generation。
+
+費用控制以 Asia/Taipei 月界線、固定匯率與每次 worst-case reservation 計算；預留後達
+NT$700 改用 Luna，達 NT$900 則不再發出雲端請求。取消、錯誤或不完整回覆若缺 usage，會以
+完整預留額保守估算。M3 先提供 in-memory ledger；SQLite 持久化與重啟還原會在 M4 完成。
 
 ## 本機語音辨識模型
 
