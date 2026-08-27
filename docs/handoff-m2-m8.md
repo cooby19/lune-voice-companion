@@ -358,15 +358,41 @@ Roleplay fine-tune。2026-08-28 已將第一候選從 `Qwen3.5-9B` 改為 `Qwen3
 | `runner.py`、`scripts/run_local_llm_spike.py` | 收集證據、交給既有 gate 評分、輸出淨化報告 |
 | `scripts/build_local_llm_manifest.py` | 量化後逐檔 SHA-256、寫入 0600 manifest 並印出 pin literals |
 
-### 仍未完成
+### Gate 執行結果（2026-08-28，目標機實測）
 
-1. 量化為 Q4 並以 `build_local_llm_manifest.py` 建立 pin，把 `LOCAL_LLM_PIN` 由 `None` 換掉。
-2. 執行延遲、記憶體、取消與工具呼叫 gate。
-3. 執行私人 persona 12 題 rubric。
-4. 依結果提出 M6 provider 決策。
+已完成量化（`mlx-lm` 0.31.3、affine、4 bits、group size 64，4.503 bits／weight、2.2 GB）、
+建立逐檔 pin、執行全部 gate 與私人 persona rubric。詳細數據見 `progress.md`。
 
-在這些完成前，`decide_local_provider` 會持續回報 `openai_responses`，這是正確行為而不是
-待修的缺陷。
+- 通過：non-thinking（42 次回覆零外洩）、工具呼叫、取消（無 late 事件）、記憶體
+  （peak RSS 3.05 GB、pressure `normal`、thermal `nominal`、無累積）、30 輪穩定性、
+  persona rubric 10／12。
+- 未通過：首句延遲。p50 1,337 ms 超出 1,150 ms 的絕對上限，p95 3,855 ms 為上限的 3.35 倍。
+
+因此 `decide_local_provider` 回報 `openai_responses`、`local_enabled=false`，
+`declared_remote_cancel=false`。
+
+### 實作上必須保留的發現
+
+- `Qwen3.5-4B` 的工具呼叫**不是 JSON**，而是
+  `<function=name><parameter=key>value</parameter></function>` 的 XML 形式，對應官方
+  `qwen3_coder` parser。`ToolCallExtractor` 已同時支援 XML 與 JSON；只實作 JSON 會讓每一次
+  工具呼叫都被判為 malformed。
+- XML 形式沒有型別，因此參數會做 scalar 轉型，否則 `importance`／`delta` 永遠無法通過
+  schema。已知代價是「內容全為數字的自由文字」會被轉成數字並遭 validator 拒絕，這比讓
+  schema 接受數字字串更安全。
+- non-thinking 不是停用 token，而是 chat template 在 prompt 尾端塞入空的
+  `<think>\n\n</think>\n\n`；預設模式則以 `<think>\n` 結尾。因此
+  `chat_template.jinja` 已納入 pin：替換它就能在不動任何權重的情況下重新開啟 thinking。
+- `Qwen/Qwen3.5-4B` 是視覺語言 checkpoint，`mlx-lm` 轉換時丟棄 `vision_tower`，所以量化
+  產物是純文字模型（8.9 GB → 2.2 GB）。
+- `huggingface_hub` 1.29／`hf_xet` 在此機器上會停滯（5 分鐘僅寫入 10 MB），改用可續傳的
+  `curl` 才穩定。未登入的 HF 下載約 0.8 MB/s 且拒絕並行連線。
+
+### 待使用者決策
+
+4B Q4 未通過延遲 gate，依 `project-decisions.md` 視為本地即時路徑在此硬體上不成立。
+改採 hybrid、維持 OpenAI 或退到更小尺寸都是新的產品決策，不得自行降低門檻或靜默切換。
+決策確定前，M6 的 LLM provider 維持 `OpenAIResponsesLLMService`。
 
 ### 決策範圍
 

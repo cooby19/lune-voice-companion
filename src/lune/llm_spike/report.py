@@ -74,6 +74,7 @@ def _metrics(aggregates: LocalLLMAggregates | None) -> dict[str, object] | None:
         "first_sentence_p50_ms": aggregates.first_sentence_p50_ms,
         "first_sentence_p95_ms": aggregates.first_sentence_p95_ms,
         "first_sentence_budget_ms": aggregates.first_sentence_budget_ms,
+        "first_sentence_ceiling_ms": aggregates.first_sentence_ceiling_ms,
         "output_tokens_per_second_p50": aggregates.output_tokens_per_second_p50,
         "peak_rss_bytes": aggregates.peak_rss_bytes,
         "peak_swap_bytes": aggregates.peak_swap_bytes,

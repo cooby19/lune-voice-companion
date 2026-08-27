@@ -53,13 +53,26 @@ def matching_pin(payload: bytes = WEIGHTS) -> ModelPin:
     )
 
 
-def test_pin_starts_unestablished() -> None:
-    assert LOCAL_LLM_PIN is None
+def test_pin_is_established_and_well_formed() -> None:
+    assert LOCAL_LLM_PIN is not None
+    assert LOCAL_LLM_PIN.model_id == BASE_MODEL_ID
+    assert len(LOCAL_LLM_PIN.revision) == 40
+    assert all(character in "0123456789abcdef" for character in LOCAL_LLM_PIN.revision)
+    paths = [item.relative_path for item in LOCAL_LLM_PIN.files]
+    assert len(paths) == len(set(paths))
+    assert all(len(item.sha256) == 64 for item in LOCAL_LLM_PIN.files)
 
 
-def test_check_fails_closed_while_the_pin_is_unset(tmp_path: Path) -> None:
+def test_pin_covers_the_chat_template() -> None:
+    """The template implements `enable_thinking=False`, so it must be pinned too."""
+
+    assert LOCAL_LLM_PIN is not None
+    assert "chat_template.jinja" in {item.relative_path for item in LOCAL_LLM_PIN.files}
+
+
+def test_check_fails_closed_when_no_pin_is_supplied(tmp_path: Path) -> None:
     manifest_path = build_model_dir(tmp_path)
-    check = check_local_llm_manifest(manifest_path)
+    check = check_local_llm_manifest(manifest_path, pin=None)
     assert check.reason == "pin_not_established"
     assert not check.ready
     assert not check.pin_established

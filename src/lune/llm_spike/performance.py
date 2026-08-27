@@ -25,6 +25,7 @@ type PerformanceReason = Literal[
     "warm_start_missing",
     "first_sentence_budget_underived",
     "first_sentence_budget_exceeded",
+    "first_sentence_exceeds_full_budget",
     "peak_rss_missing",
     "peak_rss_exceeded",
     "memory_pressure_missing",
@@ -83,6 +84,15 @@ class LatencyBudget:
     @property
     def derived(self) -> bool:
         return self.stt_final_p50_ms is not None and self.tts_ttfa_p50_ms is not None
+
+    def first_sentence_ceiling_ms(self) -> float:
+        """The most the model could ever have, even if Whisper and TTS were instant.
+
+        Unlike the derived budget this needs no upstream measurement, so exceeding it is
+        decisive on its own: no improvement elsewhere in the pipeline could rescue it.
+        """
+
+        return max(self.end_to_end_p50_ms - self.end_silence_ms, 0.0)
 
     def first_sentence_budget_ms(self) -> float | None:
         """Milliseconds left for the model's first complete sentence, or None if unknown.
@@ -177,6 +187,7 @@ class LocalLLMAggregates:
     first_sentence_p95_ms: float | None
     output_tokens_per_second_p50: float | None
     first_sentence_budget_ms: float | None
+    first_sentence_ceiling_ms: float
     peak_rss_bytes: int | None
     peak_swap_bytes: int | None
     worst_memory_pressure: MemoryPressure | None
@@ -277,6 +288,7 @@ def evaluate_performance(
         first_sentence_p95_ms=nearest_rank(measurements.first_sentence_ms, 0.95),
         output_tokens_per_second_p50=nearest_rank(measurements.output_tokens_per_second, 0.50),
         first_sentence_budget_ms=first_sentence_budget,
+        first_sentence_ceiling_ms=effective_budget.first_sentence_ceiling_ms(),
         peak_rss_bytes=measurements.peak_rss_bytes,
         peak_swap_bytes=max(measurements.swap_used_bytes, default=None),
         worst_memory_pressure=_cast_pressure(worst_pressure),
@@ -299,6 +311,11 @@ def evaluate_performance(
         reasons.append("first_sentence_budget_underived")
     elif first_sentence_p50 is not None and first_sentence_p50 > first_sentence_budget:
         reasons.append("first_sentence_budget_exceeded")
+    if (
+        first_sentence_p50 is not None
+        and first_sentence_p50 > effective_budget.first_sentence_ceiling_ms()
+    ):
+        reasons.append("first_sentence_exceeds_full_budget")
     if measurements.peak_rss_bytes is None:
         reasons.append("peak_rss_missing")
     elif measurements.peak_rss_bytes > peak_rss_limit_bytes:

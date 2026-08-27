@@ -97,3 +97,70 @@ def test_feed_after_finish_is_rejected() -> None:
 def test_result_repr_hides_content() -> None:
     result = ExtractionResult(text="私人內容")
     assert "私人內容" not in repr(result)
+
+
+QWEN_XML = (
+    "<tool_call>\n<function=propose_memory>\n"
+    "<parameter=content>\n每週三晚上都要打羽球\n</parameter>\n"
+    "<parameter=category>\nexplicit_plan\n</parameter>\n"
+    "<parameter=importance>\n0.8\n</parameter>\n"
+    "</function>\n</tool_call>"
+)
+
+
+def test_qwen_xml_tool_call_is_parsed() -> None:
+    """Qwen3.5 emits an XML form, not JSON."""
+
+    text, calls = drain((QWEN_XML,))
+    assert text == ""
+    assert len(calls) == 1
+    call = calls[0]
+    assert call.tool_name == "propose_memory"  # type: ignore[attr-defined]
+    assert not call.malformed  # type: ignore[attr-defined]
+    arguments = json.loads(call.arguments_json)  # type: ignore[attr-defined]
+    assert arguments == {
+        "content": "每週三晚上都要打羽球",
+        "category": "explicit_plan",
+        "importance": 0.8,
+    }
+
+
+def test_qwen_xml_split_across_chunks() -> None:
+    chunks = tuple(QWEN_XML[index : index + 7] for index in range(0, len(QWEN_XML), 7))
+    text, calls = drain(chunks)
+    assert text == ""
+    assert len(calls) == 1
+    assert not calls[0].malformed  # type: ignore[attr-defined]
+
+
+def test_entirely_numeric_free_text_becomes_a_number() -> None:
+    """A documented limitation of the untyped XML form.
+
+    Coercion is what lets `importance` and `delta` satisfy the schema at all; the cost is
+    that a memory whose content is only digits turns into a number and is then rejected by
+    the validator rather than silently stored with the wrong type.
+    """
+
+    block = (
+        "<tool_call>\n<function=propose_memory>\n"
+        "<parameter=content>\n123\n</parameter>\n</function>\n</tool_call>"
+    )
+    _, calls = drain((block,))
+    arguments = json.loads(calls[0].arguments_json)  # type: ignore[attr-defined]
+    assert arguments["content"] == 123
+
+
+def test_boolean_and_integer_parameters_are_coerced() -> None:
+    block = (
+        "<tool_call>\n<function=propose_affinity>\n"
+        "<parameter=delta>\n1\n</parameter>\n"
+        "<parameter=reason>\nwarm exchange\n</parameter>\n</function>\n</tool_call>"
+    )
+    _, calls = drain((block,))
+    arguments = json.loads(calls[0].arguments_json)  # type: ignore[attr-defined]
+    assert arguments == {"delta": 1, "reason": "warm exchange"}
+
+
+def test_xml_without_a_function_name_is_malformed() -> None:
+    _, calls = drain(("<tool_call>\n<function=>\n</function>\n</tool_call>",))
+    assert calls[0].malformed  # type: ignore[attr-defined]

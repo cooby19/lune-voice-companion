@@ -11,7 +11,7 @@
 | M3 | 完成（公開 gate） | 119 項 M3 tests／186 項完整 pytest；Pipecat Responses WebSocket registry；Terra／Luna 獨立 instance；三句 cancel/drain、retry／late-event 與 700／900 ledger；[commit `3d1e084`](https://github.com/cooby19/lune-voice-companion/commit/3d1e084633f025bb51084b3ec3abcc61f82fd753)；[CI #33033271278](https://github.com/cooby19/lune-voice-companion/actions/runs/33033271278) |
 | M4 | 完成（公開 gate） | 13 項 M4 tests／199 項完整 pytest；8-table migration、private SQLite pragmas／permissions、13th-turn rolling summary、E5 384 維 bounded retrieval、proposal dedupe／cancel、affinity audit、usage 重啟還原與 exact-ID CLI；[commit `a5ef5f0`](https://github.com/cooby19/lune-voice-companion/commit/a5ef5f0d36f29f53e34eb360604e90ee2177ff24)；[CI #33071346597](https://github.com/cooby19/lune-voice-companion/actions/runs/33071346597) |
 | M5 | 完成（公開 gate） | 27 項 M5 tests／226 項完整 pytest；typed utterance／PCM 契約、bounded length-prefix protocol、固定 GPT-SoVITS revision、Python 3.10 isolated worker、AVSpeech PCM callback、generation／sequence fence、500 ms cancel、worker crash／sandbox denial、整句 fallback 與 session circuit breaker；[commit `bd59740`](https://github.com/cooby19/lune-voice-companion/commit/bd59740e293e39aa7226ce49fadd4e85163afbbf)；[CI #33073392282](https://github.com/cooby19/lune-voice-companion/actions/runs/33073392282) |
-| M6 前置：本地 LLM spike | 進行中（公開 gate 完成，硬體 gate 未執行） | 102 項 spike tests／328 項完整 pytest；串流 `<think>` 濾除與違規記錄、pin 未建立即 fail-closed 的模型 manifest、loopback-only endpoint 政策、runtime 候選成本表、由端到端預算推導的首句延遲門檻、RSS／swap／queue 累積偵測、工具呼叫 schema 與每 turn 限額、取消證據與 `remote_cancel` 誠實標示、淨化報告；未安裝 runtime、未下載模型、未讀取私人 persona；[commit `c0a348e`](https://github.com/cooby19/lune-voice-companion/commit/c0a348ee14142b8a292240fa729c8659b09d0941)；[CI #33093928857](https://github.com/cooby19/lune-voice-companion/actions/runs/33093928857) |
+| M6 前置：本地 LLM spike | 完成（gate 已執行，效能未通過） | 102 項 spike tests／328 項完整 pytest；串流 `<think>` 濾除與違規記錄、pin 未建立即 fail-closed 的模型 manifest、loopback-only endpoint 政策、runtime 候選成本表、由端到端預算推導的首句延遲門檻、RSS／swap／queue 累積偵測、工具呼叫 schema 與每 turn 限額、取消證據與 `remote_cancel` 誠實標示、淨化報告；未安裝 runtime、未下載模型、未讀取私人 persona；[commit `c0a348e`](https://github.com/cooby19/lune-voice-companion/commit/c0a348ee14142b8a292240fa729c8659b09d0941)；[CI #33093928857](https://github.com/cooby19/lune-voice-companion/actions/runs/33093928857) |
 | M6 | 待處理 | 完整 pipeline 與插話 benchmark |
 | M7 | 待處理 | 選單列 App、authenticated IPC 與打包 |
 | M8 | 待處理 | Keychain、簽署、soak／隱私／release gate |
@@ -48,13 +48,49 @@
   Q4 版本，採用第三方轉換或自行量化是尚待授權的選擇；在 pin 建立前任何 manifest 檢查都
   fail closed。第一候選已於 2026-08-28 由 9B 改為 4B，是為了先用較低成本判斷本地路徑
   可行性，不代表 4B 已通過任何 gate。
+- 本地 LLM spike 的實機 gate 已於 2026-08-28 在目標 MacBook Air M4／16GB 執行完畢，
+  使用本機量化的 `Qwen3.5-4B` Q4（4.503 bits／weight，2.2 GB，視覺塔已於轉換時丟棄）。
+  行為類 gate 全數通過，效能 gate 未通過：
+
+  | 項目 | 實測 | 門檻 | 判定 |
+  |---|---|---|---|
+  | 冷啟動／暖啟動 | 2,680／2,602 ms | 記錄用 | 記錄 |
+  | 首 token p50／p95 | 614／752 ms | 記錄用 | 記錄 |
+  | 首句 p50 | 1,337 ms | ≤1,150 ms | 未通過 |
+  | 首句 p95 | 3,855 ms | 見下 | 未通過 |
+  | 生成速度 p50 | 19.8 tokens/s | 記錄用 | 記錄 |
+  | peak RSS | 3.05 GB | ≤10 GiB | 通過 |
+  | memory pressure／thermal | `normal`／`nominal` | 不得 warn／serious | 通過 |
+  | RSS／swap／queue 累積 | 0.24%／0%／無 | 不得單調累積 | 通過 |
+  | 30 輪穩定性 | 30 輪無失敗 | ≥30 | 通過 |
+  | 取消 | 5 次試驗無 late token／tool call | 零 late 事件 | 通過 |
+  | 工具呼叫 | schema、限額、去重皆符合 | — | 通過 |
+  | non-thinking | 42 次回覆零推理外洩 | 零違規 | 通過 |
+  | 私人 persona rubric | 10／12 | ≥10 | 通過 |
+
+- 首句 1,150 ms 上限的推導：端到端 p50 ≤1.5 s 扣除 350 ms 句尾靜音後的**全部**餘裕，
+  等於假設 Whisper 與 TTS 皆為 0 ms。實測首句 p50 為 1,337 ms，已超出這個不可能達成的
+  寬鬆上限 187 ms；p95 3,855 ms 為上限的 3.35 倍。因此結論不依賴尚未執行的 M2／M5
+  本機延遲測量，也不會因上游改善而翻案。
+- 瓶頸在生成速度而非首 token：首 token p50 僅 614 ms，但 19.8 tokens/s 使一個完整中文
+  句子仍需約 700 ms 以上。記憶體與散熱有大量餘裕（3.05 GB／16 GB，全程 `nominal`），
+  所以失敗原因是延遲，不是資源。
+- `remote_cancel` 未宣告：取消 gate 通過（無 late 事件、停止在期限內），但部分試驗中生成
+  在 cancel 抵達前就自然結束，因此無法在每次試驗都證明停止本機推論。依規定不得宣告。
+- persona rubric 未通過的兩題為自動關鍵字判準未命中，尚未經人工複核，不等於模型確實
+  違規；rubric 題目與回覆依規定不進公開 repo 或診斷。
+- 依 `project-decisions.md`，4B Q4 未通過延遲 gate 即視為本地即時路徑在此硬體上不成立。
+  是否改採 hybrid、維持 OpenAI 或退到更小尺寸是新的產品決策，尚未決定，不得自行降低門檻
+  或靜默切換。
 - 硬體與私人模型報告只在本機產生；除非先完成淨化，否則不進版控。
 - 每個里程碑必須先通過該階段 gate、更新本文件、建立可回退 commit 並 push，才進入下一階段。
 
 ## 後續交接
 
-M2、M3、M4、M5 與本地 LLM spike 的 public gate 均已通過。M2 local model／私人語料、
-M3 私人人格 rubric、M4 真實 E5、M5 私人 GPT 模型／效能 gate，以及本地 LLM spike 的
-runtime、模型與硬體 gate 均尚未執行。後續工作請先閱讀
-[`handoff-m2-m8.md`](handoff-m2-m8.md)。下一步需要使用者授權安裝 runtime 與下載 Q4 產物，
-之後才能執行延遲、記憶體、取消與工具呼叫 gate，並據此提出 M6 provider 決策。
+M2、M3、M4、M5 的 public gate 與本地 LLM spike 的完整 gate（含實機延遲、記憶體、取消、
+工具呼叫與私人 persona rubric）均已執行完畢。M2 local model／私人語料、M4 真實 E5、
+M5 私人 GPT 模型／效能 gate 仍未執行。
+
+本地 LLM spike 的結論是：`Qwen3.5-4B` Q4 在此硬體上行為正確、資源充裕，但首句延遲無法
+滿足既有端到端門檻。M6 的 LLM provider 因此仍是 `openai_responses`，等待使用者就
+hybrid、維持 OpenAI 或改用更小模型做出新的產品決策後，才能固定 M6 pipeline 組成。

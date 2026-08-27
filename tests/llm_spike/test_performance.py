@@ -207,3 +207,33 @@ def test_measurements_reject_negative_latency() -> None:
             first_sentence_ms=(1.0,),
             output_tokens_per_second=(1.0,),
         )
+
+
+def test_ceiling_needs_no_upstream_measurement() -> None:
+    """The ceiling is decisive on its own, unlike the derived budget."""
+
+    budget = LatencyBudget()
+    assert not budget.derived
+    assert budget.first_sentence_budget_ms() is None
+    assert budget.first_sentence_ceiling_ms() == pytest.approx(1_150.0)
+
+
+def test_first_sentence_above_the_ceiling_fails_even_without_a_derived_budget() -> None:
+    slow = passing_measurements(
+        first_sentence_ms=tuple(1_200.0 for _ in range(MIN_STABILITY_TURNS))
+    )
+    gate = evaluate_performance(slow)
+    assert "first_sentence_exceeds_full_budget" in gate.reasons
+    assert not gate.passed
+
+
+def test_first_sentence_below_the_ceiling_does_not_trip_it() -> None:
+    gate = evaluate_performance(passing_measurements(), budget=DERIVED_BUDGET)
+    assert "first_sentence_exceeds_full_budget" not in gate.reasons
+    assert gate.passed, gate.reasons
+
+
+def test_ceiling_is_reported_in_the_aggregates() -> None:
+    gate = evaluate_performance(passing_measurements(), budget=DERIVED_BUDGET)
+    assert gate.aggregates is not None
+    assert gate.aggregates.first_sentence_ceiling_ms == pytest.approx(1_150.0)

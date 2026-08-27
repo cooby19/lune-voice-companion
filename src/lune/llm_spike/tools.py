@@ -9,6 +9,7 @@ validator result embeds them in a repr.
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Final, Literal
@@ -347,7 +348,55 @@ class ToolCallExtractor:
         return False
 
 
+_FUNCTION_PATTERN: Final[re.Pattern[str]] = re.compile(r"<function=([^>\s]+)\s*>")
+_PARAMETER_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"<parameter=([^>\s]+)\s*>(.*?)</parameter\s*>", re.DOTALL
+)
+
+
+def _coerce(raw: str) -> object:
+    """Convert a parameter to a scalar when it parses as one, otherwise keep the text.
+
+    The XML form carries no types, so `importance` and `delta` would never satisfy the
+    schema without this. The known cost is that free text which is entirely numeric, such
+    as a memory whose content is "123", becomes a number and is then rejected by the
+    validator. That is preferred over accepting numbers as strings, which would weaken the
+    schema for every call.
+    """
+
+    stripped = raw.strip()
+    try:
+        value = json.loads(stripped)
+    except (ValueError, RecursionError):
+        return stripped
+    return value if isinstance(value, int | float | bool) else stripped
+
+
+def _parse_qwen_xml_block(block: str) -> ExtractedToolCall | None:
+    """Parse Qwen's XML tool-call form, which is not JSON.
+
+    Qwen3.5 emits `<function=name><parameter=key>value</parameter>...</function>`, the
+    shape the official `qwen3_coder` tool-call parser expects.
+    """
+
+    match = _FUNCTION_PATTERN.search(block)
+    if match is None:
+        return None
+    name = match.group(1).strip()
+    if not name:
+        return ExtractedToolCall("", "", malformed=True)
+    arguments = {
+        key.strip(): _coerce(value)
+        for key, value in _PARAMETER_PATTERN.findall(block)
+        if key.strip()
+    }
+    return ExtractedToolCall(name, json.dumps(arguments, ensure_ascii=False))
+
+
 def _parse_block(block: str) -> ExtractedToolCall:
+    xml_call = _parse_qwen_xml_block(block)
+    if xml_call is not None:
+        return xml_call
     try:
         payload = json.loads(block.strip())
     except (ValueError, RecursionError):

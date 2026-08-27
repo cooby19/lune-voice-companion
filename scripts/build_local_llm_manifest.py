@@ -16,11 +16,19 @@ import sys
 from pathlib import Path
 
 RUNTIME_FILES = (
+    "chat_template.jinja",
     "config.json",
     "model.safetensors",
+    "model.safetensors.index.json",
     "tokenizer.json",
     "tokenizer_config.json",
 )
+"""Every file the runtime loads.
+
+`chat_template.jinja` is pinned deliberately: it is what implements
+`enable_thinking=False`, so replacing it would silently re-enable reasoning output
+without changing a single weight.
+"""
 
 
 def sha256_of(path: Path) -> str:

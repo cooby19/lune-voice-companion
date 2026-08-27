@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from lune.llm_spike.decision import decide_local_provider
-from lune.llm_spike.model_pin import LocalLLMManifestCheck
+from lune.llm_spike.model_pin import check_local_llm_manifest
 from lune.llm_spike.performance import MIN_STABILITY_TURNS, LatencyBudget
 from lune.llm_spike.report import build_sanitized_report, write_sanitized_report
 from lune.llm_spike.runner import (
@@ -40,6 +40,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cancel-trials", type=int, default=5)
     parser.add_argument("--stt-final-p50-ms", type=float, default=None)
     parser.add_argument("--tts-ttfa-p50-ms", type=float, default=None)
+    parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument("--summary-out", type=Path, default=None)
     parser.add_argument("--skip-report", action="store_true")
     return parser.parse_args(argv)
@@ -99,9 +100,12 @@ async def run(args: argparse.Namespace) -> int:
         tts_ttfa_p50_ms=args.tts_ttfa_p50_ms,
     )
     grades = grade(evidence, budget=budget)
+    manifest_path = args.manifest or LunePaths.defaults().local_llm_manifest
+    manifest_check = check_local_llm_manifest(manifest_path)
+    print(f"model manifest: {manifest_check.reason}", file=sys.stderr)
     decision = decide_local_provider(
         runtime_probes=(RuntimeProbe(name="mlx_lm_worker", status="installed"),),
-        manifest_check=LocalLLMManifestCheck(reason="pin_not_established"),
+        manifest_check=manifest_check,
         thinking_gate=grades.thinking,
         tool_gate=grades.tools,
         cancellation_gate=grades.cancellation,
@@ -112,7 +116,7 @@ async def run(args: argparse.Namespace) -> int:
 
     if not args.skip_report:
         report = build_sanitized_report(
-            manifest_status="pin_not_established",
+            manifest_status=manifest_check.reason,
             thinking_gate=grades.thinking,
             tool_gate=grades.tools,
             cancellation_gate=grades.cancellation,
