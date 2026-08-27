@@ -2,10 +2,11 @@
 
 更新日期：2026-08-28
 
-本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2、M3、M4 與 M5 remote gate。
-後續聊天室應先完成 M6 前置的本地 LLM spike，再固定 M6 pipeline；M2 local model／私人
-語料、M3 私人人格 rubric、M4 真實 E5、M5 私人 GPT 模型／效能 gate，以及 Qwen 本地 LLM
-gate 尚未執行，不得誤認為已通過。
+本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2、M3、M4、M5 remote gate 與
+本地 LLM spike 的公開 gate。後續聊天室應先取得授權、完成本地 LLM spike 的 runtime、
+模型與硬體 gate，再固定 M6 pipeline；M2 local model／私人語料、M3 私人人格 rubric、
+M4 真實 E5、M5 私人 GPT 模型／效能 gate，以及 Qwen 的實機 gate 尚未執行，不得誤認為
+已通過。
 
 ## 交接基準
 
@@ -27,11 +28,13 @@ gate 尚未執行，不得誤認為已通過。
 | M5 本機 gate | 27 項 M5 tests／226 項完整 pytest；TTS protocol、isolated worker、AVSpeech streaming、fallback 與 circuit breaker，已通過 |
 | M5 commit | `bd59740`（`M5: add isolated streaming TTS backends`），已 push |
 | M5 CI | [GitHub Actions #33073392282](https://github.com/cooby19/lune-voice-companion/actions/runs/33073392282)，已通過 |
-| 下一階段 | M6 前置：Qwen3.5-4B Q4 本地 LLM spike；之後為 M6 中央取消與完整管線 |
+| 本地 LLM spike 公開 gate | 102 項 spike tests／328 項完整 pytest，已通過 |
+| 下一階段 | 取得授權後執行本地 LLM spike 的 runtime／模型／硬體 gate；之後為 M6 中央取消與完整管線 |
 
-目前完成 M0、M0.5、M1、M2、M3、M4 與 M5 的 public／remote gate；本地 LLM spike 與
-M6–M8 尚未實作。本機可能已有私人設定，但私人 persona、API key、模型、聲線、資料庫、
-逐字稿、裝置識別資料與診斷原始內容都不是交接文件或公開 repo 的一部分。
+目前完成 M0、M0.5、M1、M2、M3、M4、M5 的 public／remote gate 與本地 LLM spike 的
+public gate；spike 的實機 gate 與 M6–M8 尚未實作。本機可能已有私人設定，但私人 persona、
+API key、模型、聲線、資料庫、逐字稿、裝置識別資料與診斷原始內容都不是交接文件或公開
+repo 的一部分。
 
 ## 新聊天室的第一輪操作
 
@@ -319,11 +322,36 @@ AVSpeech 預設。
 
 ## M6 前置：Qwen3.5-4B Q4 本地 LLM spike
 
-狀態：只有文件決策，尚未實作、安裝 runtime、下載模型或執行硬體 gate。目標機固定為
-MacBook Air M4／16GB，第一候選為官方
+狀態：harness 與公開 gate 已完成並 push；runtime 未安裝、模型未下載、硬體 gate 未執行。
+目標機固定為 MacBook Air M4／16GB，第一候選為官方
 [`Qwen/Qwen3.5-4B`](https://huggingface.co/Qwen/Qwen3.5-4B) 的 Q4 量化；第一輪不得改用
 Roleplay fine-tune。2026-08-28 已將第一候選從 `Qwen3.5-9B` 改為 `Qwen3.5-4B`，理由與
 升級／放棄條件見 `project-decisions.md`。
+
+### 已完成（`src/lune/llm_spike/`，102 項測試）
+
+| 模組 | 內容 |
+|---|---|
+| `thinking.py` | 串流 `<think>` 濾除，處理跨 chunk 分割標籤；推理內容只計長度不保存；任何推理出現即記為違規 |
+| `model_pin.py` | 委派 M2 已強化的 manifest 驗證；`LOCAL_LLM_PIN` 維持 `None`，pin 未建立時 fail closed |
+| `runtime.py` | 四個 runtime 候選的成本表（是否需安裝、是否增加 PID、是否開 listener、是否共用位址空間）與 loopback-only endpoint 政策 |
+| `performance.py` | 由端到端預算推導首句延遲門檻；30 輪穩定性、peak RSS、memory pressure、swap、thermal 與 RSS／swap／queue 累積偵測 |
+| `tools.py` | `propose_memory`／`propose_affinity` 的 schema、每 turn 限額與跨 turn 內容去重，沿用 M4 類別 |
+| `cancellation.py` | late token／tool call／PCM 一律判定失敗；`remote_cancel` 只在取得停止推論證據時標示為 true |
+| `decision.py` | 缺任一證據即固定回傳 `openai_responses`；未把本地 provider 名稱寫進 `ProviderName` |
+| `report.py` | 0600、`O_EXCL`、僅 allowlist 數值欄位的淨化報告 |
+| `fixtures.py` | 公開中／英／混流 prompt fixtures，不含 persona 或私人內容 |
+
+### 尚未執行，且需要使用者授權
+
+1. 安裝所選 runtime。
+2. 下載 Q4 產物並建立逐檔 checksum，才能把 `LOCAL_LLM_PIN` 由 `None` 換成實際 pin。
+   官方 repository 沒有官方 Q4 版本，因此必須先決定採用第三方轉換或自行量化。
+3. 讀取私人 persona 以執行 12 題 rubric。
+4. 若選擇會增加第四個受管理程序或系統常駐服務的 runtime，屬於程序架構變更。
+
+在這四項完成前，`decide_local_provider` 會持續回報 `openai_responses`，這是正確行為而不是
+待修的缺陷。
 
 ### 決策範圍
 

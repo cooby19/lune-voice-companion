@@ -51,6 +51,40 @@
 - 在 spike 與後續實作完成前，M3 的 OpenAI Responses、Terra／Luna、Keychain readiness、費用
   ledger 與 rolling summary 行為仍是目前實作；文件不得宣稱 Lune 已經 local-only。
 
+### 本地 LLM spike harness（2026-08-28 實作；仍未安裝 runtime 或下載模型）
+
+- 已建立 `lune.llm_spike`，只包含 gate 邏輯與公開 fixtures。它不安裝 runtime、不下載模型、
+  不讀取私人 persona、不啟動任何程序，也沒有把本地 provider 名稱加入
+  `lune.llm.contracts.ProviderName`。註冊本地 provider 是 M6 的事，且以 spike 結果為前提。
+- 已依官方模型頁確認 `Qwen/Qwen3.5-4B` 存在且為 post-trained（base 版本是另一個 `-Base`
+  repository），預設開啟 thinking 並以 `<think>…</think>` 標示，可用 chat template 的
+  `enable_thinking=False` 關閉，且支援 tool calling。是否能可靠關閉仍須在選定 runtime 後實測。
+- 官方 repository 沒有官方 Q4 產物。可選路徑是採用第三方轉換（例如 mlx-community 或 GGUF
+  轉換）或下載官方權重後自行量化。兩者的下載量、信任邊界與可驗證性不同，屬於尚待授權的
+  選擇；在選定前 `LOCAL_LLM_PIN` 維持 `None`，任何 manifest 檢查都 fail closed。
+- runtime 候選以成本表記錄，不預先擇一：in-process `mlx-lm` 不增加 PID 但與 engine 共用位址
+  空間；`mlx-lm` worker 可硬取消卻會成為第四個受管理程序；`llama.cpp` server 與 Ollama 需要
+  loopback listener，其中 Ollama 是不受 engine 生命週期管理的系統常駐服務，與「退出後無
+  orphan」及逐檔 pin 相衝突。
+- 本地 endpoint 只允許 `http` 且 host 必須是 loopback、必須有明確 port，並拒絕帶憑證、query
+  或 fragment 的 URL。
+- 首句延遲門檻不獨立設定，而是由端到端 p50 ≤1.5 s 扣除 350 ms 句尾靜音、Whisper final 延遲
+  與 TTS TTFA 推導。`SentenceGate` 以整句放行，因此端到端時鐘取決於第一個完整句子而非第一個
+  token；兩者都會測量。M2／M5 的本機延遲尚未量測，因此推導結果為「未定」，而未定一律判定
+  gate 失敗，不得視為通過。
+- 記憶體驗收以可觀察的失敗徵狀為主：memory pressure 必須維持 `normal`、thermal 只允許
+  `nominal`／`fair`、不得 OOM，且 RSS／swap／queue 不得單調累積或末段平均比首段惡化 25% 以上。
+  另有預設 10 GiB 的合併 peak RSS 上限，這是 16 GiB 機器保留約 6 GiB 給 macOS、UI 與 page
+  cache 的 spike 預設值，不是量測常數，使用者可另行設定。
+- 取消分成兩個獨立問題：fence 關閉後是否仍有 token、tool call 或 PCM 流到下游（一律視為失敗），
+  以及 runtime 是否真的停止運算（只有取得證據才可標示 `remote_cancel`）。只關閉 client stream
+  仍可通過 gate，但不得宣稱 `remote_cancel`。
+- 工具呼叫沿用 M4 的類別與限額：只允許 `propose_memory`／`propose_affinity`，每 turn 各最多
+  一筆，delta 只能是 ±1，並以 normalized content 跨 turn 去重。本地模型不得比雲端模型獲得更
+  寬的權限。
+- `<think>` 濾除為串流實作，會處理跨 chunk 分割的標籤，且推理內容只計長度、不累積保存；
+  出現任何推理內容都會記為違規，因為那代表 non-thinking 開關沒有生效。
+
 ## STT 模型與取消邊界
 
 - STT 固定為 `mlx-community/whisper-large-v3-turbo-q4` revision

@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Final, Literal
 
 from lune.memory.embedding import E5MemoryRetriever
 from lune.memory.store import MemoryStore
 
 type ProposalStatus = Literal["committed", "duplicate", "rejected_limit", "cancelled"]
-_MEMORY_CATEGORIES = frozenset(
+MEMORY_CATEGORIES: Final[frozenset[str]] = frozenset(
     {"stable_preference", "important_person_or_event", "explicit_plan", "explicit_request"}
 )
+_MEMORY_CATEGORIES = MEMORY_CATEGORIES
 
 
 @dataclass(frozen=True, slots=True)

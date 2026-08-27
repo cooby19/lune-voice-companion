@@ -40,6 +40,10 @@ class LunePaths:
         return self.support / "models" / "e5" / "manifest.json"
 
     @property
+    def local_llm_manifest(self) -> Path:
+        return self.support / "models" / "qwen-local" / "manifest.json"
+
+    @property
     def tts_manifest(self) -> Path:
         return self.support / "voices" / "gpt-sovits" / "manifest.json"
 
