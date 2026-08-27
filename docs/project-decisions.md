@@ -20,18 +20,28 @@
 - 唯一的 generation coordinator 在插話或輸出裝置切換後，統一作廢舊 STT、模型事件、
   工具提案與 PCM。
 
-### 本地 LLM 前置實驗（2026-08-27；尚未實作）
+### 本地 LLM 前置實驗（2026-08-27 決定；2026-08-28 改為 4B；尚未實作）
 
 - 已同意在 M6 組裝完整 pipeline 前，於目標 MacBook Air M4／16GB 上先評估官方
-  [`Qwen/Qwen3.5-9B`](https://huggingface.co/Qwen/Qwen3.5-9B) 的 Q4 量化版本。官方模型名稱
+  [`Qwen/Qwen3.5-4B`](https://huggingface.co/Qwen/Qwen3.5-4B) 的 Q4 量化版本。官方模型名稱
   不含 `-Instruct`；該 repository 已是 post-trained 模型。
+- 第一候選原為 `Qwen3.5-9B`，2026-08-28 改為 `Qwen3.5-4B`。理由是 M4 Air 為 16GB 統一
+  記憶體且被動散熱：9B Q4 權重約 5GB，與 Whisper、E5 及 release TTS（M5 gate 上限
+  6GB peak RSS）並存時記憶體餘裕過小；而端到端 p50 ≤1.5 s 扣掉 350 ms 句尾靜音、
+  Whisper 推論與 TTS TTFA 後，留給 LLM 產出完整第一句的時間僅數百毫秒。先測 4B 是為了
+  用較低成本回答「本地方案是否可行」，不是因為 9B 品質不足。
+- 若 4B Q4 通過全部 gate 且仍有明顯記憶體與熱餘裕，可再評估 9B Q4 是否值得換取品質；
+  若 4B 過不了延遲或穩定性 gate，視為本地即時路徑在此硬體上不成立，改採 hybrid 或維持
+  OpenAI 是新的產品決策。兩個方向都不得自行降低門檻或靜默切換。
 - 第一輪只測官方 post-trained 模型，不使用 Roleplay fine-tune。只有既有人格 prompt 無法
   通過 rubric，且候選 adapter／fine-tune 的來源、授權、chat template、safetensors 與工具
   呼叫能力都可驗證時，才另行評估微調版本。
 - 「Q4」目前只代表量化等級；GGUF／MLX 格式、Ollama／llama.cpp／獨立 MLX worker 與是否
   增加第四個受管理程序都尚未決定。不得在 spike 前把任一 runtime 寫成正式架構。
-- 語音路徑要求 non-thinking 回覆；Qwen runtime 必須能可靠關閉 thinking，且不得把
-  `<think>` 或 reasoning content 送入 `SentenceGate`、TTS、記憶或診斷。
+- 語音路徑要求 non-thinking 回覆。`Qwen3.5-4B` 官方預設為 thinking 模式，需以官方 chat
+  template 的 `enable_thinking=False`（或所選 runtime 的等效開關）關閉；實際是否可靠關閉
+  必須在選定 runtime 後實測，不得假設支援。`<think>` 或 reasoning content 一律不得送入
+  `SentenceGate`、TTS、記憶、SQLite 或診斷。
 - 本地 provider 必須沿用 typed frame、generation／attempt correlation、三句 gate、兩階段
   memory proposal 與中央取消契約。若 runtime 只會關閉 client stream、不能證明停止本機
   推論，`remote_cancel` capability 必須如實標為 false。

@@ -1,6 +1,6 @@
 # 開發進度
 
-更新日期：2026-08-27
+更新日期：2026-08-28
 
 | 里程碑 | 狀態 | Gate 證據 |
 |---|---|---|
@@ -11,7 +11,7 @@
 | M3 | 完成（公開 gate） | 119 項 M3 tests／186 項完整 pytest；Pipecat Responses WebSocket registry；Terra／Luna 獨立 instance；三句 cancel/drain、retry／late-event 與 700／900 ledger；[commit `3d1e084`](https://github.com/cooby19/lune-voice-companion/commit/3d1e084633f025bb51084b3ec3abcc61f82fd753)；[CI #33033271278](https://github.com/cooby19/lune-voice-companion/actions/runs/33033271278) |
 | M4 | 完成（公開 gate） | 13 項 M4 tests／199 項完整 pytest；8-table migration、private SQLite pragmas／permissions、13th-turn rolling summary、E5 384 維 bounded retrieval、proposal dedupe／cancel、affinity audit、usage 重啟還原與 exact-ID CLI；[commit `a5ef5f0`](https://github.com/cooby19/lune-voice-companion/commit/a5ef5f0d36f29f53e34eb360604e90ee2177ff24)；[CI #33071346597](https://github.com/cooby19/lune-voice-companion/actions/runs/33071346597) |
 | M5 | 完成（公開 gate） | 27 項 M5 tests／226 項完整 pytest；typed utterance／PCM 契約、bounded length-prefix protocol、固定 GPT-SoVITS revision、Python 3.10 isolated worker、AVSpeech PCM callback、generation／sequence fence、500 ms cancel、worker crash／sandbox denial、整句 fallback 與 session circuit breaker；[commit `bd59740`](https://github.com/cooby19/lune-voice-companion/commit/bd59740e293e39aa7226ce49fadd4e85163afbbf)；[CI #33073392282](https://github.com/cooby19/lune-voice-companion/actions/runs/33073392282) |
-| M6 前置：本地 LLM spike | 待處理（文件決策完成） | 目標機為 MacBook Air M4／16GB；先評估官方 `Qwen/Qwen3.5-9B` 的 Q4 量化，不使用 Roleplay fine-tune；runtime 與程序架構尚未決定，未下載或執行模型 |
+| M6 前置：本地 LLM spike | 待處理（文件決策完成） | 目標機為 MacBook Air M4／16GB；先評估官方 `Qwen/Qwen3.5-4B` 的 Q4 量化（2026-08-28 由 9B 改為 4B），不使用 Roleplay fine-tune；runtime 與程序架構尚未決定，未下載或執行模型 |
 | M6 | 待處理 | 完整 pipeline 與插話 benchmark |
 | M7 | 待處理 | 選單列 App、authenticated IPC 與打包 |
 | M8 | 待處理 | Keychain、簽署、soak／隱私／release gate |
@@ -34,9 +34,10 @@
   混流 corpus、TTFA p95、RTF p95、peak RSS、15 分鐘 thermal 與真實取消 gate 均標示為
   「未執行」，因此 release 預設仍為 AVSpeech。
 - 本地 LLM spike 目前只有方向決策，尚未改動 provider、OpenAI readiness、費用策略或 M6
-  pipeline。`Qwen3.5-9B` 必須先在 16GB 統一記憶體下通過首 token 延遲、30 輪穩定性、
+  pipeline。`Qwen3.5-4B` 必須先在 16GB 統一記憶體下通過首 token 延遲、30 輪穩定性、
   memory pressure／swap、取消、工具呼叫與既有端到端延遲門檻，才能成為 release 候選；
-  不得把「模型可以載入」寫成完整驗收通過。
+  不得把「模型可以載入」寫成完整驗收通過。第一候選已於 2026-08-28 由 9B 改為 4B，
+  是為了先用較低成本判斷本地路徑可行性，不代表 4B 已通過任何 gate。
 - 硬體與私人模型報告只在本機產生；除非先完成淨化，否則不進版控。
 - 每個里程碑必須先通過該階段 gate、更新本文件、建立可回退 commit 並 push，才進入下一階段。
 

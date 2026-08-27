@@ -63,8 +63,10 @@ NT$700 改用 Luna，達 NT$900 則不再發出雲端請求。取消、錯誤或
 
 目前 release 實作仍使用上述 OpenAI Responses provider，尚未提供可選的本地文字 LLM。
 專案已決定在 M6 完整 pipeline 組裝前，先於 MacBook Air M4／16GB 評估官方
-[`Qwen/Qwen3.5-9B`](https://huggingface.co/Qwen/Qwen3.5-9B) 的 Q4 量化版本。第一輪只測官方
+[`Qwen/Qwen3.5-4B`](https://huggingface.co/Qwen/Qwen3.5-4B) 的 Q4 量化版本。第一輪只測官方
 post-trained 模型，不使用 Roleplay fine-tune，也不把實驗結果描述為已取代 OpenAI。
+尺寸選 4B 而非更大的 9B，是因為 16GB 統一記憶體要同時容納 Whisper、E5 與 TTS，且被動
+散熱的 Air 需留熱餘裕；先測 4B 可用較低成本判斷本地路徑是否可行。
 
 Q4 的模型格式與 runtime 尚未選定；候選必須先通過 non-thinking 串流、首 token 與端到端
 延遲、16GB memory pressure／swap、30 輪穩定性、中央取消、三句 gate，以及

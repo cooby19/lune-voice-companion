@@ -1,6 +1,6 @@
 # M2–M8 實作規劃與交接
 
-更新日期：2026-08-27
+更新日期：2026-08-28
 
 本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2、M3、M4 與 M5 remote gate。
 後續聊天室應先完成 M6 前置的本地 LLM spike，再固定 M6 pipeline；M2 local model／私人
@@ -27,7 +27,7 @@ gate 尚未執行，不得誤認為已通過。
 | M5 本機 gate | 27 項 M5 tests／226 項完整 pytest；TTS protocol、isolated worker、AVSpeech streaming、fallback 與 circuit breaker，已通過 |
 | M5 commit | `bd59740`（`M5: add isolated streaming TTS backends`），已 push |
 | M5 CI | [GitHub Actions #33073392282](https://github.com/cooby19/lune-voice-companion/actions/runs/33073392282)，已通過 |
-| 下一階段 | M6 前置：Qwen3.5-9B Q4 本地 LLM spike；之後為 M6 中央取消與完整管線 |
+| 下一階段 | M6 前置：Qwen3.5-4B Q4 本地 LLM spike；之後為 M6 中央取消與完整管線 |
 
 目前完成 M0、M0.5、M1、M2、M3、M4 與 M5 的 public／remote gate；本地 LLM spike 與
 M6–M8 尚未實作。本機可能已有私人設定，但私人 persona、API key、模型、聲線、資料庫、
@@ -308,12 +308,13 @@ breaker 與 AVSpeech fallback。私人 GPT gate 需 TTFA p95 ≤1.0 s、RTF p95 
 ≤6 GB、15 分鐘無 serious／critical thermal，並在取消後 500 ms 內停止；未通過即維持
 AVSpeech 預設。
 
-## M6 前置：Qwen3.5-9B Q4 本地 LLM spike
+## M6 前置：Qwen3.5-4B Q4 本地 LLM spike
 
 狀態：只有文件決策，尚未實作、安裝 runtime、下載模型或執行硬體 gate。目標機固定為
 MacBook Air M4／16GB，第一候選為官方
-[`Qwen/Qwen3.5-9B`](https://huggingface.co/Qwen/Qwen3.5-9B) 的 Q4 量化；第一輪不得改用
-Roleplay fine-tune。
+[`Qwen/Qwen3.5-4B`](https://huggingface.co/Qwen/Qwen3.5-4B) 的 Q4 量化；第一輪不得改用
+Roleplay fine-tune。2026-08-28 已將第一候選從 `Qwen3.5-9B` 改為 `Qwen3.5-4B`，理由與
+升級／放棄條件見 `project-decisions.md`。
 
 ### 決策範圍
 
@@ -322,13 +323,15 @@ Roleplay fine-tune。
   llama.cpp 或 MLX server 任一候選預先寫成 release 依賴。
 - 本機 endpoint 只能綁 loopback，不得隱式下載、載入 remote code 或在推論時對外連線；選定
   artifact 後須固定來源、revision、regular-file policy 與逐檔 checksum。
-- Qwen 必須使用 non-thinking 模式。reasoning／`<think>` 內容不得進入語音、記憶、SQLite、
-  診斷或公開測試輸出。
+- Qwen 必須使用 non-thinking 模式。`Qwen3.5-4B` 官方預設開啟 thinking，需以 chat template 的
+  `enable_thinking=False` 或 runtime 等效開關關閉，並實測確認；不得假設支援。reasoning／
+  `<think>` 內容不得進入語音、記憶、SQLite、診斷或公開測試輸出。
 - provider adapter 必須保留既有 generation／attempt fence、三句 gate、usage 的誠實能力標示、
   兩階段工具提案與 cancel/drain 語意；OpenAI-compatible 不等於 Responses WebSocket，可另建
   provider，不得用不相容 endpoint 假裝 drop-in replacement。
-- 若 9B Q4 在 16GB 不符合 gate，保留失敗證據並停止；是否改測 Qwen3.5-4B、保留 OpenAI 或
-  採 hybrid fallback 是新的產品決策，不得自行降低門檻或靜默切換。
+- 若 4B Q4 在 16GB 不符合 gate，保留失敗證據並停止；是否改採 hybrid、維持 OpenAI 或退到
+  更小尺寸是新的產品決策，不得自行降低門檻或靜默切換。反之若 4B 全數通過且記憶體與熱
+  餘裕充足，是否升級到 9B Q4 同樣是新的產品決策，須重跑完整 gate。
 
 ### Spike gate
 
@@ -419,7 +422,7 @@ Roleplay fine-tune。
 ```text
 先完整閱讀我提供的 PLAN.md，以及 repo 的 docs/handoff-m2-m8.md、
 docs/progress.md、docs/project-decisions.md。以已通過 M5 GitHub Actions 的最新 main 為基準，
-先實作 M6 前置的 Qwen3.5-9B Q4 本地 LLM spike，不組裝 M6 完整 pipeline。目標機是 MacBook
+先實作 M6 前置的 Qwen3.5-4B Q4 本地 LLM spike，不組裝 M6 完整 pipeline。目標機是 MacBook
 Air M4／16GB；先使用官方 post-trained 模型，不使用 Roleplay fine-tune。安裝 runtime、下載
 模型、讀取私人 persona 或改變程序架構前先取得授權。保留所有失敗證據，完成文件所列的
 延遲、記憶體、取消與工具呼叫 gate 後，再提出 M6 provider 決策；不得批量刪除任何檔案或目錄。
