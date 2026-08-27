@@ -2,9 +2,8 @@
 
 更新日期：2026-08-27
 
-本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2 本機 public gate 結果。M2
-commit 已 push，但 GitHub Actions API 尚未為該 push 建立 run；完成遠端 gate 後，後續聊天室
-應從 M3 開始。M2 local model／私人語料 gate 尚未執行，不得誤認為已通過。
+本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2 public gate 與 GitHub Actions
+結果。後續聊天室應從 M3 開始；M2 local model／私人語料 gate 尚未執行，不得誤認為已通過。
 
 ## 交接基準
 
@@ -16,7 +15,7 @@ commit 已 push，但 GitHub Actions API 尚未為該 push 建立 run；完成�
 | M1 CI | [GitHub Actions #32982714128](https://github.com/cooby19/lune-voice-companion/actions/runs/32982714128)，已通過 |
 | M1 本機／CI gate | Ruff、格式、mypy、50 項測試、secret scan、import／self-test，已通過 |
 | M2 commit | `ebe262d`（`M2: add generation-fenced final-only STT`），已 push |
-| M2 CI | GitHub Actions API 尚未建立 run，未驗收 |
+| M2 CI | [GitHub Actions #32990678422](https://github.com/cooby19/lune-voice-companion/actions/runs/32990678422)，已通過 |
 | 下一階段 | M3：Responses provider、句數與費用策略 |
 
 目前完成 M0、M0.5、M1 與 M2 public gate。M3–M8 尚未實作。本機可能已有私人設定，但私人 persona、
@@ -109,7 +108,7 @@ CoreAudio stream owner 仍須在 M6／M7 整合。
 
 ## M2：MLX Whisper final-only
 
-狀態：本機 public gate 已完成且 commit 已 push；CI run 尚未建立。已固定 upstream revision 與
+狀態：public gate、push 與 GitHub Actions 已完成。已固定 upstream revision 與
 `config.json`／`weights.npz` SHA-256，
 實作 final-only typed event、四層 generation fence、容量 1 的 latest-wins pending、lazy
 optional import 與 bounded `close()`。中文／英文／中英混流私人語料與本機模型效能 gate
@@ -356,8 +355,8 @@ AVSpeech 預設。
 
 ```text
 先完整閱讀我提供的 PLAN.md，以及 repo 的 docs/handoff-m2-m8.md、
-docs/progress.md、docs/project-decisions.md。先確認 M2 commit 已 push 且 CI 通過，再以最新
-main 為基準只實作 M3：Responses provider、三句 gate、取消 drain 與 700／900 費用策略。
+docs/progress.md、docs/project-decisions.md。以已通過 M2 GitHub Actions 的最新 main 為基準，
+只實作 M3：Responses provider、三句 gate、取消 drain 與 700／900 費用策略。
 先查官方 OpenAI 與 Pipecat 1.7.0 文件，保留所有私人資料邊界；完成 targeted／full gate、
 更新進度、建立單一 commit、推送並確認 CI 後停止回報。不得批量刪除任何檔案或目錄。
 ```
