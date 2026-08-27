@@ -61,8 +61,17 @@ M6–M8 尚未實作。本機可能已有私人設定，但私人 persona、API 
    uv run mypy src/lune
    uv run pytest
    uv run python scripts/secret_scan.py
+   uv run python -c "import py2app; import lune.app; import lune.engine"
+   uv run lune self-test
    git diff --check
    ```
+
+   `chflags` 與最後兩步不可省略。uv 建立的 `.venv` 內容帶有 macOS `UF_HIDDEN` 旗標，而
+   CPython 的 `site.addpackage` 會跳過帶該旗標的 `.pth`，使 editable install 的
+   `_editable_impl_*.pth` 不被處理、`src/` 進不了 `sys.path`。此時 `import lune` 會失敗，
+   但 `pytest` 仍會全綠（它以自己的 rootdir／`pythonpath` 找到 `src/`），因此只有 import 與
+   `self-test` 這兩步能偵測到。旗標已被觀察到會再度出現，import 失敗時先重跑 `chflags`
+   再驗一次，不要改動 `pyproject.toml` 或重建 `.venv`。
 
 5. 若工作樹不是乾淨狀態，先辨識並保留使用者既有變更。不得 reset、覆寫或批量刪除。
    工作樹乾淨時，再以 `git pull --ff-only` 快轉到最新 `main`；若無法 fast-forward，停止並
