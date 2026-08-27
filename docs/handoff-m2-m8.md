@@ -388,6 +388,32 @@ Roleplay fine-tune。2026-08-28 已將第一候選從 `Qwen3.5-9B` 改為 `Qwen3
 - `huggingface_hub` 1.29／`hf_xet` 在此機器上會停滯（5 分鐘僅寫入 10 MB），改用可續傳的
   `curl` 才穩定。未登入的 HF 下載約 0.8 MB/s 且拒絕並行連線。
 
+### M5 已知缺口：AVSpeech 原生 driver 需要 CFRunLoop（2026-08-28 實測）
+
+`AVSpeechAdapter` 的 `_NativeAVSpeechDriver` 使用
+`writeUtterance_toBufferCallback_`。實測確認：**沒有運轉中的 CFRunLoop 時，該 callback
+永遠不會觸發**——純 asyncio 腳本等 8 秒得到 0 個 buffer；在迴圈中呼叫
+`CFRunLoopRunInMode` 後，462 ms 就收到第一個 buffer。
+
+M5 的公開 gate 使用 fake AVSpeech callback，因此沒有暴露這點。由於 AVSpeech 是 release
+的預設 TTS backend，M6／M7 整合時必須讓 engine 具備運轉中的 run loop（或把合成放到擁有
+run loop 的執行緒），否則預設語音路徑會靜默掛住。這是實作缺口，不是 spike 的失敗。
+
+實測 TTFA（20 句中／英短句，含暖機）：p50 28 ms、p95 328 ms、max 461 ms。
+
+### 首句延遲可由 prompt 策略改善（2026-08-28 實測）
+
+要求模型「第一句最多 10 字」後，30 輪比較：
+
+| 策略 | 首句 p50 | 首句 p95 |
+|---|---|---|
+| baseline | 1,754 ms | 2,530 ms |
+| 第一句限長 | 1,160 ms | 1,804 ms |
+
+改善約 30%，但仍超過 1,150 ms 上限，因此不足以讓原門檻成立。此測量與完整 gate 分次執行，
+基準值本身有機器負載造成的變異（同一 baseline 曾測得 p50 1,337 ms），引用時應視為區間而非
+單一數值。
+
 ### 待使用者決策
 
 4B Q4 未通過延遲 gate，依 `project-decisions.md` 視為本地即時路徑在此硬體上不成立。
