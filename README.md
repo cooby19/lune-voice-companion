@@ -132,6 +132,38 @@ uv run lune memory export
 uv run lune memory forget <exact-id>
 ```
 
+## 本機語音合成
+
+M5 將所有本機語音後端固定在同一套 streaming 契約：每個完整 utterance 會建立一筆帶有
+`request_id`／`generation_id` 的請求，後端只回傳帶 generation 的 signed 16-bit interleaved
+PCM。Router 只在 utterance 開始前選擇一次後端；GPT-SoVITS 若在第一個 PCM chunk 前失敗，
+可由 `AVSpeechSynthesizer` 從頭合成，開始出聲後則不會在句中切換聲線。
+
+`AVSpeechSynthesizer` 是 release fallback，也是私人 GPT 效能 gate 尚未完成時的固定預設。
+它使用 Apple 的 buffer callback 取得 PCM，取消時使用 immediate boundary；不直接播放到系統
+輸出，因此仍由 Lune 的 generation fence 與音訊 transport 管理播放。
+
+實驗性 GPT-SoVITS runtime 固定到官方 commit
+[`48b1a0169a28582a8984402f82cf438d3bfa6aca`](https://github.com/RVC-Boss/GPT-SoVITS/tree/48b1a0169a28582a8984402f82cf438d3bfa6aca)，
+並須由使用者自行放在
+`~/Library/Application Support/Lune/models/gpt-sovits-runtime/`。目錄內的 `.lune-revision`
+必須只有該 40 字元 commit；repo 不提供 downloader，也不會自動取得 runtime、checkpoint、
+參考音訊或參考文字。私人 voice manifest 仍放在
+`~/Library/Application Support/Lune/voices/gpt-sovits/manifest.json`，並由 M0.5 validator 與
+worker 啟動時各自核對 revision、regular file、權限與 SHA-256。
+
+Worker 使用獨立 Python 3.10、stdin/stdout 長度前綴協定及 stderr-only upstream log；環境採
+allowlist，不繼承 API key，Transformers／Hugging Face 固定 offline。每次啟動都主動驗證
+`sandbox-exec` 確實拒絕檔案 canary 與 network，再以 deny-by-default profile 啟動；工具已被
+Apple 標為 deprecated，因此 probe 或 profile 套用失敗一律停用 GPT 並 fallback。取消先要求
+worker soft stop，500 ms 未完成才終止目前已驗證的 worker PID；重建失敗會開啟 session
+circuit breaker。
+
+Checkpoint checksum 只能確認檔案與私人 manifest 相符，不能排除 pickle／`torch.load` 的
+任意程式碼執行風險。私人 GPT 模型的 TTFA、RTF、RSS、thermal 與取消 gate 尚未執行，
+因此即使設定要求 `gpt_sovits`，release factory 仍會保持 `avspeech`，直到該 gate 有明確通過
+證據。
+
 ## 隱私與私人聲線資產
 
 禁止提交 `kernel.yaml`、`config.toml`、資料庫、金鑰、裝置識別資料、完整訪談、

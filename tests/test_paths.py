@@ -10,3 +10,6 @@ def test_canonical_paths() -> None:
     assert paths.persona == Path("/Users/test/Library/Application Support/Lune/persona/kernel.yaml")
     assert paths.database.name == "lune.sqlite3"
     assert paths.logs == Path("/Users/test/Library/Logs/Lune")
+    assert paths.gpt_sovits_revision == Path(
+        "/Users/test/Library/Application Support/Lune/models/gpt-sovits-runtime/.lune-revision"
+    )

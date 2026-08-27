@@ -43,6 +43,14 @@ class LunePaths:
     def tts_manifest(self) -> Path:
         return self.support / "voices" / "gpt-sovits" / "manifest.json"
 
+    @property
+    def gpt_sovits_runtime(self) -> Path:
+        return self.support / "models" / "gpt-sovits-runtime"
+
+    @property
+    def gpt_sovits_revision(self) -> Path:
+        return self.gpt_sovits_runtime / ".lune-revision"
+
     def ensure_private_directories(self) -> None:
         for directory in (self.support, self.persona.parent, self.logs):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)

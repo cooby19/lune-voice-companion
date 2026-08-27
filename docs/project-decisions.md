@@ -64,6 +64,19 @@
 - Release 永遠保留 `AVSpeechSynthesizer` fallback。
 - GPT-SoVITS 是使用私人資產的實驗性 adapter，執行於 Python 3.10 獨立程序，並使用
   可拋棄 child、hash 驗證、環境清理、網路封鎖與 fail-closed sandbox。
+- GPT-SoVITS runtime 固定於 upstream commit
+  `48b1a0169a28582a8984402f82cf438d3bfa6aca`；runtime 與 voice manifest 各自保存於
+  Application Support，repo 不提供 downloader。worker 與 host 啟動時都核對 revision，host
+  每次啟動另重新執行 sandbox capability probe。
+- Worker protocol version 1 使用 4-byte big-endian length prefix；control frame 為 bounded
+  JSON，PCM frame 為 bounded binary signed 16-bit mono payload，並以 generation／sequence
+  拒絕 late 或錯序資料。Stdout 只允許 protocol，upstream print 轉到由 host 丟棄的 stderr。
+- `TTSRouterService` 以完整 utterance 選擇後端。GPT 在第一個 PCM 前失敗才可由 AVSpeech
+  從頭 fallback；已輸出 PCM 後禁止中途換聲線。soft cancel 逾 500 ms 才終止目前已驗證的
+  worker PID，重建失敗則 session circuit breaker 開啟。
+- Apple 已將 `sandbox-exec` 標為 deprecated；因此可執行檔存在不等於可用，active denial
+  probe 或 production profile 套用失敗都必須 fail closed。私人效能 gate 未通過前，即使設定
+  偏好 GPT，release factory 仍固定選 AVSpeech。
 - 本專案不下載或散布私人 checkpoint 與參考錄音。Pickle／checkpoint 的 hash 只能證明
   檔案身份，不能證明安全性。
 

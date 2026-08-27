@@ -2,9 +2,9 @@
 
 更新日期：2026-08-27
 
-本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2、M3 與 M4 remote gate。後續聊天室
-應從 M5 開始；M2 local model／私人語料、M3 私人人格 rubric 與 M4 真實 E5
-模型 gate 尚未執行，不得誤認為已通過。
+本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2、M3、M4 remote gate 與 M5
+public gate。後續聊天室應從 M6 開始；M2 local model／私人語料、M3 私人人格 rubric、M4
+真實 E5 與 M5 私人 GPT 模型／效能 gate 尚未執行，不得誤認為已通過。
 
 ## 交接基準
 
@@ -23,9 +23,11 @@
 | M4 本機 gate | 13 項 M4 tests／199 項完整 pytest；SQLite、summary、E5 retrieval、proposal、affinity、usage 與 CLI，已通過 |
 | M4 commit | `a5ef5f0`（`M4: add local memory and relationship state`），已 push |
 | M4 CI | [GitHub Actions #33071346597](https://github.com/cooby19/lune-voice-companion/actions/runs/33071346597)，已通過 |
-| 下一階段 | M5：TTS 正式 backend |
+| M5 本機 gate | 27 項 M5 tests／226 項完整 pytest；TTS protocol、isolated worker、AVSpeech streaming、fallback 與 circuit breaker，已通過 |
+| 下一階段 | M6：中央取消與完整管線 |
 
-目前完成 M0、M0.5、M1、M2、M3 與 M4 public／remote gate。M5–M8 尚未實作。
+目前完成 M0、M0.5、M1、M2、M3 與 M4 public／remote gate，以及 M5 public gate。M6–M8
+尚未實作。
 本機可能已有私人設定，但私人 persona、
 API key、模型、聲線、資料庫、逐字稿、裝置識別資料與診斷原始內容都不是交接文件或
 公開 repo 的一部分。
@@ -275,6 +277,11 @@ affinity audit、exact-ID deletion，以及 10 個黃金檢索至少 8 個進 to
 
 ## M5：TTS 正式 backend
 
+狀態：public gate 已完成。已加入 typed utterance／PCM 契約、bounded length-prefix binary
+protocol、固定 upstream revision 的 Python 3.10 worker、AVSpeech buffer callback、整句 router、
+generation／sequence fence、500 ms cancel 與 session circuit breaker。沒有讀取私人 manifest、
+checkpoint、參考音訊或文字；真實模型／效能 gate 尚未執行，release factory 仍固定 AVSpeech。
+
 ### 實作重點
 
 - 固定公開契約：`TTSRequest`、`PCMChunk`、`StreamingTTSBackend.synthesize()`／`cancel()`／
@@ -373,9 +380,8 @@ AVSpeech 預設。
 
 ```text
 先完整閱讀我提供的 PLAN.md，以及 repo 的 docs/handoff-m2-m8.md、
-docs/progress.md、docs/project-decisions.md。以已通過 M4 GitHub Actions 的最新 main 為基準，
-只實作 M5：TTS protocol、GPT-SoVITS 正式 worker、AVSpeech adapter、PCM streaming 與 circuit
-breaker。
-先查相關官方文件與固定套件原始碼，保留所有私人資料邊界；完成 targeted／full gate、更新進度、
+docs/progress.md、docs/project-decisions.md。以已通過 M5 GitHub Actions 的最新 main 為基準，
+只實作 M6：完整管線、唯一 GenerationCoordinator、中央取消、插話、錯誤恢復與公開 benchmark
+契約。先查 Pipecat 1.7.0 固定原始碼，保留所有私人資料邊界；完成 targeted／full gate、更新進度、
 建立單一 commit、推送並確認 CI 後停止回報。不得批量刪除任何檔案或目錄。
 ```
