@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Final, Literal
 
+from lune.llm_spike.tagscan import held_suffix
+
 THINK_OPEN: Final[str] = "<think>"
 THINK_CLOSE: Final[str] = "</think>"
 _TAGS: Final[tuple[str, ...]] = (THINK_OPEN, THINK_CLOSE)
@@ -113,7 +115,7 @@ class ThinkingFilter:
             self._pending = self._pending[close_at + len(THINK_CLOSE) :]
             self._record("unopened_reasoning_close")
             return True
-        held = _held_suffix(self._pending)
+        held = held_suffix(self._pending, _TAGS)
         split = len(self._pending) - held
         visible.append(self._pending[:split])
         self._pending = self._pending[split:]
@@ -126,7 +128,7 @@ class ThinkingFilter:
             self._pending = self._pending[close_at + len(THINK_CLOSE) :]
             self._inside = False
             return True
-        held = _held_suffix(self._pending)
+        held = held_suffix(self._pending, _TAGS)
         split = len(self._pending) - held
         self._count_reasoning(split)
         self._pending = self._pending[split:]
@@ -143,17 +145,6 @@ class ThinkingFilter:
 
     def _result(self, text: str) -> ThinkingFilterResult:
         return ThinkingFilterResult(text=text, violations=tuple(self._violations))
-
-
-def _held_suffix(text: str) -> int:
-    """Length of the longest suffix that could still grow into a thinking tag."""
-
-    limit = min(max(len(tag) for tag in _TAGS) - 1, len(text))
-    for size in range(limit, 0, -1):
-        suffix = text[-size:]
-        if any(tag.startswith(suffix) for tag in _TAGS):
-            return size
-    return 0
 
 
 type ThinkingGateReason = ThinkingViolation | Literal["no_responses"]

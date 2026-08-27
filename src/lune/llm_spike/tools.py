@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Final, Literal
 
 from lune.llm_spike.performance import MIN_STABILITY_TURNS
+from lune.llm_spike.tagscan import held_suffix
 from lune.memory.proposals import MEMORY_CATEGORIES
 
 PROPOSE_MEMORY: Final[str] = "propose_memory"
@@ -244,3 +245,121 @@ def _check_fields(payload: dict[str, object], expected: frozenset[str]) -> ToolC
 def _record(reasons: list[ToolGateReason], reason: ToolGateReason) -> None:
     if reason not in reasons:
         reasons.append(reason)
+
+
+TOOL_CALL_OPEN: Final[str] = "<tool_call>"
+TOOL_CALL_CLOSE: Final[str] = "</tool_call>"
+_TOOL_TAGS: Final[tuple[str, ...]] = (TOOL_CALL_OPEN, TOOL_CALL_CLOSE)
+MAX_TOOL_BLOCK_CHARS: Final[int] = 8 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractedToolCall:
+    """One `<tool_call>` block lifted out of the text stream."""
+
+    tool_name: str
+    arguments_json: str = field(repr=False)
+    malformed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionResult:
+    text: str = field(repr=False)
+    tool_calls: tuple[ExtractedToolCall, ...] = ()
+
+
+class ToolCallExtractor:
+    """Pull Qwen `<tool_call>` blocks out of a stream so they never reach speech.
+
+    Tags may straddle chunk boundaries, so a suffix that could still become a tag is
+    withheld. A block that never closes, or that exceeds the size bound, is dropped and
+    reported as malformed rather than leaking partial JSON downstream.
+    """
+
+    __slots__ = ("_block", "_closed", "_inside", "_pending")
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._block = ""
+        self._inside = False
+        self._closed = False
+
+    def feed(self, text: str) -> ExtractionResult:
+        if self._closed:
+            raise ValueError("tool call extractor is closed")
+        self._pending += text
+        visible: list[str] = []
+        calls: list[ExtractedToolCall] = []
+        while True:
+            if self._inside:
+                if self._consume_block(calls):
+                    continue
+                break
+            if self._consume_visible(visible):
+                continue
+            break
+        return ExtractionResult(text="".join(visible), tool_calls=tuple(calls))
+
+    def finish(self) -> ExtractionResult:
+        self._closed = True
+        if self._inside:
+            self._block = ""
+            self._inside = False
+            return ExtractionResult(
+                text="",
+                tool_calls=(ExtractedToolCall("", "", malformed=True),),
+            )
+        tail, self._pending = self._pending, ""
+        return ExtractionResult(text=tail)
+
+    def _consume_visible(self, visible: list[str]) -> bool:
+        open_at = self._pending.find(TOOL_CALL_OPEN)
+        if open_at >= 0:
+            visible.append(self._pending[:open_at])
+            self._pending = self._pending[open_at + len(TOOL_CALL_OPEN) :]
+            self._inside = True
+            self._block = ""
+            return True
+        held = held_suffix(self._pending, _TOOL_TAGS)
+        split = len(self._pending) - held
+        visible.append(self._pending[:split])
+        self._pending = self._pending[split:]
+        return False
+
+    def _consume_block(self, calls: list[ExtractedToolCall]) -> bool:
+        close_at = self._pending.find(TOOL_CALL_CLOSE)
+        if close_at >= 0:
+            self._block += self._pending[:close_at]
+            self._pending = self._pending[close_at + len(TOOL_CALL_CLOSE) :]
+            self._inside = False
+            calls.append(_parse_block(self._block))
+            self._block = ""
+            return True
+        held = held_suffix(self._pending, _TOOL_TAGS)
+        split = len(self._pending) - held
+        self._block += self._pending[:split]
+        self._pending = self._pending[split:]
+        if len(self._block) > MAX_TOOL_BLOCK_CHARS:
+            self._block = ""
+            self._inside = False
+            calls.append(ExtractedToolCall("", "", malformed=True))
+            return True
+        return False
+
+
+def _parse_block(block: str) -> ExtractedToolCall:
+    try:
+        payload = json.loads(block.strip())
+    except (ValueError, RecursionError):
+        return ExtractedToolCall("", "", malformed=True)
+    if not isinstance(payload, dict):
+        return ExtractedToolCall("", "", malformed=True)
+    name = payload.get("name")
+    arguments = payload.get("arguments")
+    if not isinstance(name, str) or not name:
+        return ExtractedToolCall("", "", malformed=True)
+    if isinstance(arguments, str):
+        return ExtractedToolCall(name, arguments)
+    if isinstance(arguments, dict):
+        return ExtractedToolCall(name, json.dumps(arguments, ensure_ascii=False))
+    return ExtractedToolCall(name, "", malformed=True)

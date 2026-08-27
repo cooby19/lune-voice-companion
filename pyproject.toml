@@ -67,6 +67,12 @@ strict = true
 packages = ["lune"]
 warn_unused_ignores = true
 
+# The spike worker runs in its own isolated runtime venv, so `mlx-lm` is deliberately
+# absent from the engine environment that mypy type-checks.
+[[tool.mypy.overrides]]
+module = ["mlx_lm.*"]
+ignore_missing_imports = true
+
 [tool.uv]
 default-groups = ["dev"]
 
