@@ -436,11 +436,31 @@ Whisper 延遲**幾乎與音訊長度無關**：1.46 s 音訊需 1,977 ms，6.23
 因此先前「本地 4B 因延遲不合格」的結論仍然成立，但它並不是原門檻無法達成的主因；
 Whisper 才是。任何只更換 LLM 的方案都無法讓原門檻成立。
 
-尚未評估的改善槓桿（皆為新的決策，未自行採用）：
+#### Encoder 成本與輸入長度成線性（2026-08-28 實測）
 
-- 改用較小的 Whisper（`base`／`small`）可能把約 1,950 ms 降到數百毫秒，代價是準確率，
-  且需更換 M2 已固定的 revision 與 checksum。
-- 縮短 Whisper 的輸入 window，避免短語音仍付 30 秒 encoder 成本。
+Whisper 的 audio encoder 對固定 30 秒 mel 的耗時，就是延遲與音訊長度無關的原因。
+實測裁切 `_positional_embedding`（它由 `sinusoids()` 產生，可安全截斷）後的 encoder 耗時：
+
+| 輸入 window | encoder 耗時 |
+|---|---|
+| 30 s（現況） | 1,224 ms |
+| 15 s | 553 ms |
+| 10 s | 349 ms |
+| 8 s | 270 ms |
+| 6 s | 202 ms |
+| 4 s | 142 ms |
+
+亦即目前約 1,950 ms 的 final 延遲中，約 1,224 ms 花在對幾乎全是靜音的 30 秒做 encoding。
+典型對話語音為 3–6 秒，改用 8 秒 window 預估可省約 950 ms。`mlx_whisper` 的
+`AudioEncoder.__call__` 以 assert 要求輸入等於 positional embedding 形狀，因此需同時
+裁切兩者。
+
+改善槓桿（皆為新的決策，未自行採用）：
+
+- **縮短輸入 window**：保留已 pin 的 `large-v3-turbo-q4` 與其準確率，預估省約 950 ms。
+  需要在 Lune 的 STT adapter 內自行控制 window，而非直接呼叫上游 `transcribe()`。
+- 改用較小的 Whisper（`base`／`small`）可再降延遲，代價是準確率，且需更換 M2 已固定的
+  revision 與 checksum。
 - LLM 第一句限長，已實測可省約 600 ms。
 
 ### 待使用者決策
