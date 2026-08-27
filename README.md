@@ -56,7 +56,8 @@ standard pricing 對應的 `service_tier=default`。句數 gate 最多放行三�
 
 費用控制以 Asia/Taipei 月界線、固定匯率與每次 worst-case reservation 計算；預留後達
 NT$700 改用 Luna，達 NT$900 則不再發出雲端請求。取消、錯誤或不完整回覆若缺 usage，會以
-完整預留額保守估算。M3 先提供 in-memory ledger；SQLite 持久化與重啟還原會在 M4 完成。
+完整預留額保守估算。每筆 settled attempt 都寫入 SQLite，重新啟動後會先還原當月已確認成本，
+再接受新的 reservation。
 
 ## 本機語音辨識模型
 
@@ -90,6 +91,46 @@ repo ID 交給 `mlx-whisper`，也不會隱式下載模型；缺少 optional dep
 `mlx-whisper` 只在第一次真實推論時 lazy import；基本安裝、公開測試與 module import 都不需要
 `mlx` extra。同步 native inference 會在背景 thread 自然完成；generation 變更或 `close()`
 會作廢結果，但不宣稱能強制終止已進入 native code 的 thread。
+
+## 本機記憶與檢索
+
+M4 將 conversation、rolling summary、long-term memory、relationship audit 與 LLM usage 存在
+`~/Library/Application Support/Lune/lune.sqlite3`。SQLite connection 固定啟用 foreign keys、
+WAL、5 秒 busy timeout 與 `secure_delete`；資料目錄與資料庫分別使用 `0700`／`0600`。
+只有 final user transcript 與已確認播放的 assistant 文字會進入完整 turn；取消的摘要與工具提案
+不會落庫。
+
+本機 semantic retrieval 固定使用
+[`intfloat/multilingual-e5-small`](https://huggingface.co/intfloat/multilingual-e5-small/tree/614241f622f53c4eeff9890bdc4f31cfecc418b3)
+revision `614241f622f53c4eeff9890bdc4f31cfecc418b3`。Runtime 只接受本機模型目錄、停用 remote
+code、要求 safetensors，並核對 `model.safetensors` SHA-256
+`1a55775f53449dac10a2bcbc312469fac40b96d53198c407081a831f81c98477`。模型目錄固定為
+`~/Library/Application Support/Lune/models/e5/`，其 `manifest.json` 格式如下：
+
+```json
+{
+  "schema_version": 1,
+  "model_id": "intfloat/multilingual-e5-small",
+  "revision": "614241f622f53c4eeff9890bdc4f31cfecc418b3",
+  "files": [
+    {
+      "relative_path": "model.safetensors",
+      "sha256": "1a55775f53449dac10a2bcbc312469fac40b96d53198c407081a831f81c98477"
+    }
+  ]
+}
+```
+
+搜尋使用 `query:`／`passage:` 前綴、384 維 cosine full scan、top-k 5、0.72 門檻與最多
+1,200 字回填。管理 CLI 不提供 bulk clear；搜尋詞以互動提示輸入，單筆刪除必須再次輸入 exact
+ID 確認：
+
+```sh
+uv run lune memory list
+uv run lune memory search
+uv run lune memory export
+uv run lune memory forget <exact-id>
+```
 
 ## 隱私與私人聲線資產
 

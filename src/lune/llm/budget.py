@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -74,6 +74,7 @@ class BudgetLedger:
         config: BudgetConfig | None = None,
         *,
         confirmed_twd: Mapping[str, Decimal] | None = None,
+        settlement_sink: Callable[[SettledAttempt], None] | None = None,
     ) -> None:
         effective = config or BudgetConfig()
         self._timezone = ZoneInfo(effective.timezone)
@@ -81,6 +82,7 @@ class BudgetLedger:
         self._fallback = Decimal(str(effective.fallback_at_twd))
         self._lock = Decimal(str(effective.lock_at_twd))
         self._confirmed = dict(confirmed_twd or {})
+        self._settlement_sink = settlement_sink
         self._active: dict[str, AttemptReservation] = {}
         self._settled: list[SettledAttempt] = []
 
@@ -167,14 +169,20 @@ class BudgetLedger:
         else:
             charge = self._actual_cost(reservation, usage)
             estimated = False
-        self._confirmed[reservation.period] = (
-            self._confirmed.get(reservation.period, Decimal()) + charge
-        )
         settled = SettledAttempt(
             reservation=reservation,
             charged_twd=charge,
             estimated=estimated,
             usage=usage,
+        )
+        try:
+            if self._settlement_sink is not None:
+                self._settlement_sink(settled)
+        except BaseException:
+            self._active[attempt_id] = reservation
+            raise
+        self._confirmed[reservation.period] = (
+            self._confirmed.get(reservation.period, Decimal()) + charge
         )
         self._settled.append(settled)
         return settled

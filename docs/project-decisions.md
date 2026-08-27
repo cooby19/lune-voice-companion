@@ -41,6 +41,24 @@
 - 使用者逐字稿在 final 接受後保存；assistant 只保存已確認播放的部分；取消的文字與提案丟棄。
 - 記憶只允許輸入 exact ID 並二次確認後刪除；不提供 bulk clear 命令。
 
+## SQLite 記憶與關係狀態
+
+- M4 schema 使用 `sessions`、`turns`、`messages`、`summaries`、
+  `long_term_memories`、`relationship_state`、`relationship_events` 與 `llm_usage`；migration
+  以 SQLite `user_version` 保持冪等。
+- 最近最多 12 個未摘要 complete turns 進 prompt。第 13 個 complete turn 後，固定以
+  `gpt-5.6-luna` 將最舊四個併入單一 rolling summary；coverage 只能連續向前延伸，取消或
+  generation 失效時不得提交。
+- E5 固定為 `intfloat/multilingual-e5-small` revision
+  `614241f622f53c4eeff9890bdc4f31cfecc418b3`；`model.safetensors` SHA-256 為
+  `1a55775f53449dac10a2bcbc312469fac40b96d53198c407081a831f81c98477`。Runtime 僅從通過
+  manifest 的本機目錄載入、停用 remote code 並強制 safetensors。
+- 記憶工具採兩階段 proposal host；只有目前 generation 可提交，並以 normalized content
+  去重。affinity 初始 50、全域 0–100、每 turn 最多一筆 ±1、每 session 累計最多 ±3，且每次
+  變更保留 audit event。
+- `llm_usage` 逐 attempt 保存 token 類型、價格版本、匯率、reserved／charged TWD 與是否估算；
+  engine 重啟時只加總既有 charged TWD，不改寫舊價格。
+
 ## TTS 安全
 
 - Release 永遠保留 `AVSpeechSynthesizer` fallback。
