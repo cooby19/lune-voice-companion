@@ -9,7 +9,7 @@
 | M1 | 完成（公開 gate） | 21 項測試；Silero bundled-model self-test；99／100、100／299／300／301、349／350 ms sample gate；700 ms pre-roll；bounded queue、重建競態與裝置狀態機；[CI #32982714128](https://github.com/cooby19/lune-voice-companion/actions/runs/32982714128) |
 | M2 | 完成（公開 gate） | 17 項 M2 測試；immutable revision／逐檔 SHA-256；final-only typed event；四層 generation fence；bounded latest-wins pending；lazy optional import 與 bounded close；[commit `ebe262d`](https://github.com/cooby19/lune-voice-companion/commit/ebe262d1fc588351d1b2598d23cfaa9eb48dca8e)；[CI #32990678422](https://github.com/cooby19/lune-voice-companion/actions/runs/32990678422) |
 | M3 | 完成（公開 gate） | 119 項 M3 tests／186 項完整 pytest；Pipecat Responses WebSocket registry；Terra／Luna 獨立 instance；三句 cancel/drain、retry／late-event 與 700／900 ledger；[commit `3d1e084`](https://github.com/cooby19/lune-voice-companion/commit/3d1e084633f025bb51084b3ec3abcc61f82fd753)；[CI #33033271278](https://github.com/cooby19/lune-voice-companion/actions/runs/33033271278) |
-| M4 | 完成（公開 gate；remote 待驗證） | 13 項 M4 tests／199 項完整 pytest；8-table migration、private SQLite pragmas／permissions、13th-turn rolling summary、E5 384 維 bounded retrieval、proposal dedupe／cancel、affinity audit、usage 重啟還原與 exact-ID CLI |
+| M4 | 完成（公開 gate） | 13 項 M4 tests／199 項完整 pytest；8-table migration、private SQLite pragmas／permissions、13th-turn rolling summary、E5 384 維 bounded retrieval、proposal dedupe／cancel、affinity audit、usage 重啟還原與 exact-ID CLI；[commit `a5ef5f0`](https://github.com/cooby19/lune-voice-companion/commit/a5ef5f0d36f29f53e34eb360604e90ee2177ff24)；[CI #33071346597](https://github.com/cooby19/lune-voice-companion/actions/runs/33071346597) |
 | M5 | 待處理 | TTS protocol、worker 隔離與 AVSpeech fallback |
 | M6 | 待處理 | 完整 pipeline 與插話 benchmark |
 | M7 | 待處理 | 選單列 App、authenticated IPC 與打包 |
@@ -33,6 +33,6 @@
 
 ## 後續交接
 
-M2 與 M3 public／remote gate 已通過；M4 public gate 已通過，remote gate 待本次 commit push
-後驗證。M2 local model／私人語料、M3 私人人格 rubric 與 M4 真實 E5 模型 gate 尚未執行。
+M2、M3 與 M4 public／remote gate 已通過。M2 local model／私人語料、M3 私人人格 rubric 與
+M4 真實 E5 模型 gate 尚未執行。
 後續工作請先閱讀 [`handoff-m2-m8.md`](handoff-m2-m8.md)，並從 M5 開始。

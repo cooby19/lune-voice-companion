@@ -2,8 +2,8 @@
 
 更新日期：2026-08-27
 
-本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2、M3 remote gate 與 M4 public
-gate。後續聊天室應從 M5 開始；M2 local model／私人語料、M3 私人人格 rubric 與 M4 真實 E5
+本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2、M3 與 M4 remote gate。後續聊天室
+應從 M5 開始；M2 local model／私人語料、M3 私人人格 rubric 與 M4 真實 E5
 模型 gate 尚未執行，不得誤認為已通過。
 
 ## 交接基準
@@ -21,11 +21,11 @@ gate。後續聊天室應從 M5 開始；M2 local model／私人語料、M3 私�
 | M3 commit | `3d1e084`（`M3: add Responses and budget policy`），已 push |
 | M3 CI | [GitHub Actions #33033271278](https://github.com/cooby19/lune-voice-companion/actions/runs/33033271278)，已通過 |
 | M4 本機 gate | 13 項 M4 tests／199 項完整 pytest；SQLite、summary、E5 retrieval、proposal、affinity、usage 與 CLI，已通過 |
-| M4 commit／CI | 待本次 public gate 完成後 push／驗證 |
+| M4 commit | `a5ef5f0`（`M4: add local memory and relationship state`），已 push |
+| M4 CI | [GitHub Actions #33071346597](https://github.com/cooby19/lune-voice-companion/actions/runs/33071346597)，已通過 |
 | 下一階段 | M5：TTS 正式 backend |
 
-目前完成 M0、M0.5、M1、M2 與 M3 public／remote gate，以及 M4 public gate。M4 remote gate
-待驗證；M5–M8 尚未實作。
+目前完成 M0、M0.5、M1、M2、M3 與 M4 public／remote gate。M5–M8 尚未實作。
 本機可能已有私人設定，但私人 persona、
 API key、模型、聲線、資料庫、逐字稿、裝置識別資料與診斷原始內容都不是交接文件或
 公開 repo 的一部分。
@@ -246,7 +246,7 @@ telemetry。
 
 ## M4：SQLite 記憶與關係狀態
 
-狀態：public gate 已完成；commit、push 與 GitHub Actions 待驗證。已建立 8-table versioned
+狀態：public gate、commit、push 與 GitHub Actions 已完成。已建立 8-table versioned
 migration、private SQLite connection policy、13th-turn rolling summary、pinned local-only E5
 adapter、bounded retrieval、兩階段 proposal host、affinity audit、usage restart restore 與
 exact-ID CLI。公開測試使用 deterministic encoder；真實 E5 模型未下載／未讀取，local model
