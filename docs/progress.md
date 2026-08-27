@@ -10,7 +10,7 @@
 | M2 | 完成（公開 gate） | 17 項 M2 測試；immutable revision／逐檔 SHA-256；final-only typed event；四層 generation fence；bounded latest-wins pending；lazy optional import 與 bounded close；[commit `ebe262d`](https://github.com/cooby19/lune-voice-companion/commit/ebe262d1fc588351d1b2598d23cfaa9eb48dca8e)；[CI #32990678422](https://github.com/cooby19/lune-voice-companion/actions/runs/32990678422) |
 | M3 | 完成（公開 gate） | 119 項 M3 tests／186 項完整 pytest；Pipecat Responses WebSocket registry；Terra／Luna 獨立 instance；三句 cancel/drain、retry／late-event 與 700／900 ledger；[commit `3d1e084`](https://github.com/cooby19/lune-voice-companion/commit/3d1e084633f025bb51084b3ec3abcc61f82fd753)；[CI #33033271278](https://github.com/cooby19/lune-voice-companion/actions/runs/33033271278) |
 | M4 | 完成（公開 gate） | 13 項 M4 tests／199 項完整 pytest；8-table migration、private SQLite pragmas／permissions、13th-turn rolling summary、E5 384 維 bounded retrieval、proposal dedupe／cancel、affinity audit、usage 重啟還原與 exact-ID CLI；[commit `a5ef5f0`](https://github.com/cooby19/lune-voice-companion/commit/a5ef5f0d36f29f53e34eb360604e90ee2177ff24)；[CI #33071346597](https://github.com/cooby19/lune-voice-companion/actions/runs/33071346597) |
-| M5 | 完成（公開 gate） | 27 項 M5 tests／226 項完整 pytest；typed utterance／PCM 契約、bounded length-prefix protocol、固定 GPT-SoVITS revision、Python 3.10 isolated worker、AVSpeech PCM callback、generation／sequence fence、500 ms cancel、worker crash／sandbox denial、整句 fallback 與 session circuit breaker；[commit `bd59740`](https://github.com/cooby19/lune-voice-companion/commit/bd59740e293e39aa7226ce49fadd4e85163afbbf)；[CI #33073392282](https://github.com/cooby19/lune-voice-companion/actions/runs/33073392282) |
+| M5 | 完成（公開 gate） | 27 項 M5 tests／226 項完整 pytest；typed utterance／PCM 契約、bounded length-prefix protocol、固定 GPT-SoVITS revision、Python 3.10 isolated worker、AVSpeech PCM callback、generation／sequence fence、500 ms cancel、worker crash／sandbox denial、整句 fallback 與 session circuit breaker；[commit `bd59740`](https://github.com/cooby19/lune-voice-companion/commit/bd59740e293e39aa7226ce49fadd4e85163afbbf)；[CI #33073392282](https://github.com/cooby19/lune-voice-companion/actions/runs/33073392282)；2026-08-28 修復 AVSpeech 原生 driver 的 CFRunLoop 缺口，完整 pytest 366 → 372 項 |
 | M6 前置：本地 LLM spike | 完成（gate 已執行，效能未通過） | 102 項 spike tests／328 項完整 pytest；串流 `<think>` 濾除與違規記錄、pin 未建立即 fail-closed 的模型 manifest、loopback-only endpoint 政策、runtime 候選成本表、由端到端預算推導的首句延遲門檻、RSS／swap／queue 累積偵測、工具呼叫 schema 與每 turn 限額、取消證據與 `remote_cancel` 誠實標示、淨化報告；未安裝 runtime、未下載模型、未讀取私人 persona；[commit `c0a348e`](https://github.com/cooby19/lune-voice-companion/commit/c0a348ee14142b8a292240fa729c8659b09d0941)；[CI #33093928857](https://github.com/cooby19/lune-voice-companion/actions/runs/33093928857) |
 | M6 | 待處理 | 完整 pipeline 與插話 benchmark |
 | M7 | 待處理 | 選單列 App、authenticated IPC 與打包 |
@@ -33,6 +33,18 @@
   manifest、checkpoint、參考音訊或參考文字，也未啟用實體音訊輸出。私人 GPT 的固定中／英／
   混流 corpus、TTFA p95、RTF p95、peak RSS、15 分鐘 thermal 與真實取消 gate 均標示為
   「未執行」，因此 release 預設仍為 AVSpeech。
+- AVSpeech 原生 driver 的 CFRunLoop 缺口已於 2026-08-28 修復。`writeUtterance_toBufferCallback_`
+  的 buffer 一律送到**主執行緒**的 run loop，因此改由擁有主執行緒的 asyncio event loop 週期
+  抽取（`_MainRunLoopPump`，5 ms tick、每 tick 最多抽 4 次），並且每抽一次只往下游送一個
+  合併後的 chunk，讓有界佇列不被離線 render 的速度衝爆。M5 的既有測試注入 fake driver，
+  無法涵蓋這條路徑，因此新增 `tests/tts/test_avspeech_native.py`：三項 `integration` 測試
+  直接驅動真實 driver，在 AVFoundation 或語音不可用時自動 skip；另三項單元測試涵蓋 pump
+  的有界抽取與停止語意。完整 pytest 由 366 項增為 372 項。
+- 該修復的實測值：修復前，等第一個 chunk 的測試在 10.13 秒的 bounded timeout 後失敗；修復後
+  0.62 秒通過。經 `AVSpeechAdapter` 全路徑量測 20 句中／英短句（含暖機），TTFA p50 24 ms、
+  p95 179 ms、max 179 ms，短句每句 1～3 個 chunk；合成期間 10 ms 目標的心跳實測 p50 12.6 ms、
+  max 19.5 ms，event loop 維持可回應。這些是本機真實 AVSpeech 量測，不是 mock 結果；私人
+  GPT 的效能 gate 仍未執行。
 - 本地 LLM spike 已完成可公開重現的 harness 與 gate 邏輯，但尚未改動 provider registry、
   OpenAI readiness、費用策略或 M6 pipeline。`lune.llm_spike` 目前不安裝任何 runtime、
   不下載模型、不讀取私人 persona，也沒有註冊本地 provider 名稱；`decide_local_provider`
@@ -90,6 +102,11 @@
 M2、M3、M4、M5 的 public gate 與本地 LLM spike 的完整 gate（含實機延遲、記憶體、取消、
 工具呼叫與私人 persona rubric）均已執行完畢。M2 local model／私人語料、M4 真實 E5、
 M5 私人 GPT 模型／效能 gate 仍未執行。
+
+M6／M7 接上 AVSpeech 時必須維持兩個前提：engine 的 asyncio loop 跑在主執行緒
+（`src/lune/engine.py` 的 `asyncio.run` 已符合），且維持逐句合成——有界佇列「溢位即
+`synthesis_failed`」的語意未改，而 AVSpeech 的 render 遠快於即時播放，單一 utterance
+超過 32 個 chunk 接上即時 sink 時仍會溢位。細節見 `docs/handoff-m2-m8.md`。
 
 本地 LLM spike 的結論是：`Qwen3.5-4B` Q4 在此硬體上行為正確、資源充裕，但首句延遲無法
 滿足既有端到端門檻。M6 的 LLM provider 因此仍是 `openai_responses`，等待使用者就

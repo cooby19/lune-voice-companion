@@ -52,6 +52,9 @@ addopts = "-ra --strict-markers"
 testpaths = ["tests"]
 pythonpath = ["src"]
 asyncio_mode = "auto"
+markers = [
+  "integration: drives real macOS AVFoundation synthesis; skips when it is unavailable",
+]
 
 [tool.ruff]
 target-version = "py312"

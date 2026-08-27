@@ -314,6 +314,7 @@ circuit breaker。沒有讀取私人 manifest、checkpoint、參考音訊或文�
 - soft cancel 500 ms 後只可終止已驗證的明確 worker PID；重建再失敗則本 session 關閉
   GPT backend。任何失敗都保留 AVSpeech fallback。
 - 公開 repo 不得加入 downloader、私人 checkpoint、參考音訊或參考文字。
+- AVSpeech 原生 driver 需要有人驅動**主執行緒**的 CFRunLoop，詳見下方「M5 缺口已修復」。
 
 ### Gate
 
@@ -388,18 +389,57 @@ Roleplay fine-tune。2026-08-28 已將第一候選從 `Qwen3.5-9B` 改為 `Qwen3
 - `huggingface_hub` 1.29／`hf_xet` 在此機器上會停滯（5 分鐘僅寫入 10 MB），改用可續傳的
   `curl` 才穩定。未登入的 HF 下載約 0.8 MB/s 且拒絕並行連線。
 
-### M5 已知缺口：AVSpeech 原生 driver 需要 CFRunLoop（2026-08-28 實測）
+### M5 缺口已修復：AVSpeech 原生 driver 的 CFRunLoop 需求（2026-08-28）
 
-`AVSpeechAdapter` 的 `_NativeAVSpeechDriver` 使用
-`writeUtterance_toBufferCallback_`。實測確認：**沒有運轉中的 CFRunLoop 時，該 callback
-永遠不會觸發**——純 asyncio 腳本等 8 秒得到 0 個 buffer；在迴圈中呼叫
-`CFRunLoopRunInMode` 後，462 ms 就收到第一個 buffer。
+原始缺口：`_NativeAVSpeechDriver` 使用 `writeUtterance_toBufferCallback_`，而**沒有運轉中
+的 CFRunLoop 時該 callback 永遠不會觸發**——純 asyncio 腳本等 8 秒得到 0 個 buffer。M5 的
+公開 gate 注入 fake driver，因此沒有暴露這點；AVSpeech 又是 release 的預設 TTS backend，
+所以 `AVSpeechAdapter.synthesize()` 在真實 engine 中會永遠掛住。
 
-M5 的公開 gate 使用 fake AVSpeech callback，因此沒有暴露這點。由於 AVSpeech 是 release
-的預設 TTS backend，M6／M7 整合時必須讓 engine 具備運轉中的 run loop（或把合成放到擁有
-run loop 的執行緒），否則預設語音路徑會靜默掛住。這是實作缺口，不是 spike 的失敗。
+修復時補測到的關鍵事實，決定了實作形狀：
 
-實測 TTFA（20 句中／英短句，含暖機）：p50 28 ms、p95 328 ms、max 461 ms。
+- **buffer 一律送到主執行緒的 run loop**，與哪個執行緒呼叫 `writeUtterance` 無關。在
+  worker thread 上自建 run loop 並 `CFRunLoopRunInMode` 抽 8 秒仍得到 0 個 buffer；同一段
+  合成改由主執行緒抽 run loop 則收到 216 個 buffer，callback 全部落在 `MainThread`。
+  因此「把合成搬到擁有 run loop 的執行緒」這個方向不成立。
+- **AVSpeech 是離線 render，不是即時串流**：一句 2.49 秒的中文（215 個 buffer、每個 256
+  frame、22,050 Hz 單聲道）約 0.36 秒就 render 完。
+- **抽一次 run loop 會一次沖出所有累積的 block**。`CFRunLoopRunInMode(mode, 0, True)` 在連續
+  呼叫時每次最多帶回 1 個 buffer，但只要中間有間隔，累積的 block 會在下一次抽取時整批送達
+  （實測單次 177 個）。逐個 buffer 轉發會直接衝爆 32 格的有界佇列，因此以牆鐘節流反而讓
+  下一批更大。
+
+實作（`src/lune/tts/avspeech.py`）：
+
+- `_MainRunLoopPump` 由**擁有主執行緒的 asyncio event loop** 以 `call_later` 週期驅動
+  （5 ms），每個 tick 最多抽 4 次 source 後交還控制權。合成期間量測心跳：10 ms 目標
+  的 `asyncio.sleep` p50 12.6 ms、max 19.5 ms，event loop 維持可回應。
+- driver 在每次 `start()` 啟動 pump、在終止 buffer／錯誤／`stop()`／`close()` 停止 pump。
+- **每抽一次 run loop 只往下游送一個 chunk**（同格式的 buffer 合併）。佇列深度因此由 pump
+  的 tick 節奏決定，而不是由 AVSpeech 的 render 速度決定，有界佇列才重新有意義。
+- driver 內另加 sequence fence：被 `stop()` 的 utterance 仍會繼續寫出 buffer，若不擋掉，
+  取消後的殘餘音訊會被算進下一個 generation。
+- asyncio loop 不在主執行緒時，若 `CFRunLoopCopyCurrentMode(CFRunLoopGetMain())` 為 `None`
+  （沒有任何人在驅動主 run loop），driver 直接 fail closed 回 `backend_unavailable`，
+  不會靜默掛住。
+
+修復後實測（20 句中／英短句，經 `AVSpeechAdapter` 全路徑，含暖機）：TTFA p50 24 ms、
+p95 179 ms、max 179 ms；短句每句 1～3 個 chunk。33.5 秒音訊在預設 32 格佇列下以 31 個
+chunk 完整送出，未觸發 overflow。
+
+測試：`tests/tts/test_avspeech_native.py`。三項 `integration` 測試直接驅動真實
+`_NativeAVSpeechDriver`，不使用 fake driver，在 AVFoundation 或語音不可用時（或設定
+`LUNE_SKIP_AVSPEECH_INTEGRATION=1`）自動 skip。對修復前的程式碼，首個 chunk 的測試在
+10.13 秒的 bounded timeout 後失敗；修復後 0.62 秒通過。另有三項不需 AVFoundation 的
+`_MainRunLoopPump` 單元測試涵蓋有界抽取與停止語意。
+
+M6／M7 必須保留的前提：
+
+- engine 的 asyncio loop 必須跑在主執行緒（`src/lune/engine.py` 的 `asyncio.run` 已符合）。
+  若 M7 讓 rumps 的 NSApplication 佔用主 run loop，engine 必須維持在獨立行程。
+- 有界佇列「溢位即 `synthesis_failed`」的語意未改。AVSpeech render 遠快於即時播放，因此
+  若下游是即時音訊 sink，單一 utterance 超過 32 個 chunk 仍會溢位；M5 的逐句合成設計讓
+  短句維持在 1～3 個 chunk，接上真實 sink 時需以逐句合成為前提。
 
 ### 首句延遲可由 prompt 策略改善（2026-08-28 實測）
 
