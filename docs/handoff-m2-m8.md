@@ -2,9 +2,10 @@
 
 更新日期：2026-08-27
 
-本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2、M3、M4 remote gate 與 M5
-public gate。後續聊天室應從 M6 開始；M2 local model／私人語料、M3 私人人格 rubric、M4
-真實 E5 與 M5 私人 GPT 模型／效能 gate 尚未執行，不得誤認為已通過。
+本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2、M3、M4 與 M5 remote gate。
+後續聊天室應先完成 M6 前置的本地 LLM spike，再固定 M6 pipeline；M2 local model／私人
+語料、M3 私人人格 rubric、M4 真實 E5、M5 私人 GPT 模型／效能 gate，以及 Qwen 本地 LLM
+gate 尚未執行，不得誤認為已通過。
 
 ## 交接基準
 
@@ -24,13 +25,13 @@ public gate。後續聊天室應從 M6 開始；M2 local model／私人語料、
 | M4 commit | `a5ef5f0`（`M4: add local memory and relationship state`），已 push |
 | M4 CI | [GitHub Actions #33071346597](https://github.com/cooby19/lune-voice-companion/actions/runs/33071346597)，已通過 |
 | M5 本機 gate | 27 項 M5 tests／226 項完整 pytest；TTS protocol、isolated worker、AVSpeech streaming、fallback 與 circuit breaker，已通過 |
-| 下一階段 | M6：中央取消與完整管線 |
+| M5 commit | `bd59740`（`M5: add isolated streaming TTS backends`），已 push |
+| M5 CI | [GitHub Actions #33073392282](https://github.com/cooby19/lune-voice-companion/actions/runs/33073392282)，已通過 |
+| 下一階段 | M6 前置：Qwen3.5-9B Q4 本地 LLM spike；之後為 M6 中央取消與完整管線 |
 
-目前完成 M0、M0.5、M1、M2、M3 與 M4 public／remote gate，以及 M5 public gate。M6–M8
-尚未實作。
-本機可能已有私人設定，但私人 persona、
-API key、模型、聲線、資料庫、逐字稿、裝置識別資料與診斷原始內容都不是交接文件或
-公開 repo 的一部分。
+目前完成 M0、M0.5、M1、M2、M3、M4 與 M5 的 public／remote gate；本地 LLM spike 與
+M6–M8 尚未實作。本機可能已有私人設定，但私人 persona、API key、模型、聲線、資料庫、
+逐字稿、裝置識別資料與診斷原始內容都不是交接文件或公開 repo 的一部分。
 
 ## 新聊天室的第一輪操作
 
@@ -47,7 +48,7 @@ API key、模型、聲線、資料庫、逐字稿、裝置識別資料與診斷�
    git log --oneline -5
    git remote -v
    gh auth status
-   gh run view 32982714128
+   gh run view 33073392282
    ```
 
 4. 同步依賴並重跑公開 gate：
@@ -277,10 +278,11 @@ affinity audit、exact-ID deletion，以及 10 個黃金檢索至少 8 個進 to
 
 ## M5：TTS 正式 backend
 
-狀態：public gate 已完成。已加入 typed utterance／PCM 契約、bounded length-prefix binary
-protocol、固定 upstream revision 的 Python 3.10 worker、AVSpeech buffer callback、整句 router、
-generation／sequence fence、500 ms cancel 與 session circuit breaker。沒有讀取私人 manifest、
-checkpoint、參考音訊或文字；真實模型／效能 gate 尚未執行，release factory 仍固定 AVSpeech。
+狀態：public gate、commit、push 與 GitHub Actions 已完成。已加入 typed utterance／PCM
+契約、bounded length-prefix binary protocol、固定 upstream revision 的 Python 3.10 worker、
+AVSpeech buffer callback、整句 router、generation／sequence fence、500 ms cancel 與 session
+circuit breaker。沒有讀取私人 manifest、checkpoint、參考音訊或文字；真實模型／效能 gate
+尚未執行，release factory 仍固定 AVSpeech。
 
 ### 實作重點
 
@@ -306,12 +308,48 @@ breaker 與 AVSpeech fallback。私人 GPT gate 需 TTFA p95 ≤1.0 s、RTF p95 
 ≤6 GB、15 分鐘無 serious／critical thermal，並在取消後 500 ms 內停止；未通過即維持
 AVSpeech 預設。
 
+## M6 前置：Qwen3.5-9B Q4 本地 LLM spike
+
+狀態：只有文件決策，尚未實作、安裝 runtime、下載模型或執行硬體 gate。目標機固定為
+MacBook Air M4／16GB，第一候選為官方
+[`Qwen/Qwen3.5-9B`](https://huggingface.co/Qwen/Qwen3.5-9B) 的 Q4 量化；第一輪不得改用
+Roleplay fine-tune。
+
+### 決策範圍
+
+- 先以獨立 spike 比較可在 Apple Silicon 使用的 Q4 格式與本機 runtime；安裝套件、下載模型
+  或選擇會改變程序架構的方案前，仍須依使用者授權與官方文件確認。不得把 Ollama、
+  llama.cpp 或 MLX server 任一候選預先寫成 release 依賴。
+- 本機 endpoint 只能綁 loopback，不得隱式下載、載入 remote code 或在推論時對外連線；選定
+  artifact 後須固定來源、revision、regular-file policy 與逐檔 checksum。
+- Qwen 必須使用 non-thinking 模式。reasoning／`<think>` 內容不得進入語音、記憶、SQLite、
+  診斷或公開測試輸出。
+- provider adapter 必須保留既有 generation／attempt fence、三句 gate、usage 的誠實能力標示、
+  兩階段工具提案與 cancel/drain 語意；OpenAI-compatible 不等於 Responses WebSocket，可另建
+  provider，不得用不相容 endpoint 假裝 drop-in replacement。
+- 若 9B Q4 在 16GB 不符合 gate，保留失敗證據並停止；是否改測 Qwen3.5-4B、保留 OpenAI 或
+  採 hybrid fallback 是新的產品決策，不得自行降低門檻或靜默切換。
+
+### Spike gate
+
+- 使用公開、淨化 prompt fixtures 測量冷／暖啟動、prompt processing、首 token p50／p95、
+  output tokens/s、peak memory、memory pressure、swap、thermal 與 30 輪穩定性。
+- 與真實 Whisper、E5 及 release TTS 組合後，不得 OOM、進入 serious／critical memory 或
+  thermal state，queue／swap／RSS 不得持續單調累積；M6 端到端仍須達 p50 ≤1.5 s、
+  p95 ≤2.2 s。
+- 驗證 client 取消後是否真的停止本機推論；無論 backend 是否可強制中止，取消後都不得出現
+  late token、tool call 或下游 PCM。無法證明 server-side cancel 時不得宣告 `remote_cancel`。
+- 以公開 fixtures 驗證 `propose_memory`／`propose_affinity` 的合法呼叫、拒絕多餘呼叫、JSON
+  schema、重複提案與 multi-turn 穩定性。私人 persona rubric 仍須另行取得讀取與執行授權。
+- 完成後才決定本地 provider 是否進入 M6；更新 progress、decisions、README 與本文件，清楚
+  分列 public mock、local model、私人 persona 與實體硬體證據。
+
 ## M6：中央取消與完整管線
 
 ### 實作重點
 
-- 建立唯一的 `GenerationCoordinator`：遞增 generation、發 interruption、作廢 STT、取消並
-  drain Responses、清 TTS／裝置 queue、撤銷未提交工具提案。
+- 建立唯一的 `GenerationCoordinator`：遞增 generation、發 interruption、作廢 STT、依選定
+  provider 誠實執行 cancel／drain、清 TTS／裝置 queue、撤銷未提交工具提案。
 - 組裝固定路徑：
 
   ```text
@@ -319,7 +357,7 @@ AVSpeech 預設。
     → LuneFinalOnlySTTService（自訂 MLX adapter）
     → LLMContextAggregator
     → ContextEnricher
-    → OpenAIResponsesLLMService
+    → LLMService（由前置 spike 決定；未完成前仍是 OpenAIResponsesLLMService）
     → SentenceGate
     → TTSRouterService
     → LocalAudioTransport.output
@@ -381,7 +419,8 @@ AVSpeech 預設。
 ```text
 先完整閱讀我提供的 PLAN.md，以及 repo 的 docs/handoff-m2-m8.md、
 docs/progress.md、docs/project-decisions.md。以已通過 M5 GitHub Actions 的最新 main 為基準，
-只實作 M6：完整管線、唯一 GenerationCoordinator、中央取消、插話、錯誤恢復與公開 benchmark
-契約。先查 Pipecat 1.7.0 固定原始碼，保留所有私人資料邊界；完成 targeted／full gate、更新進度、
-建立單一 commit、推送並確認 CI 後停止回報。不得批量刪除任何檔案或目錄。
+先實作 M6 前置的 Qwen3.5-9B Q4 本地 LLM spike，不組裝 M6 完整 pipeline。目標機是 MacBook
+Air M4／16GB；先使用官方 post-trained 模型，不使用 Roleplay fine-tune。安裝 runtime、下載
+模型、讀取私人 persona 或改變程序架構前先取得授權。保留所有失敗證據，完成文件所列的
+延遲、記憶體、取消與工具呼叫 gate 後，再提出 M6 provider 決策；不得批量刪除任何檔案或目錄。
 ```

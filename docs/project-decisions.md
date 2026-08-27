@@ -20,6 +20,27 @@
 - 唯一的 generation coordinator 在插話或輸出裝置切換後，統一作廢舊 STT、模型事件、
   工具提案與 PCM。
 
+### 本地 LLM 前置實驗（2026-08-27；尚未實作）
+
+- 已同意在 M6 組裝完整 pipeline 前，於目標 MacBook Air M4／16GB 上先評估官方
+  [`Qwen/Qwen3.5-9B`](https://huggingface.co/Qwen/Qwen3.5-9B) 的 Q4 量化版本。官方模型名稱
+  不含 `-Instruct`；該 repository 已是 post-trained 模型。
+- 第一輪只測官方 post-trained 模型，不使用 Roleplay fine-tune。只有既有人格 prompt 無法
+  通過 rubric，且候選 adapter／fine-tune 的來源、授權、chat template、safetensors 與工具
+  呼叫能力都可驗證時，才另行評估微調版本。
+- 「Q4」目前只代表量化等級；GGUF／MLX 格式、Ollama／llama.cpp／獨立 MLX worker 與是否
+  增加第四個受管理程序都尚未決定。不得在 spike 前把任一 runtime 寫成正式架構。
+- 語音路徑要求 non-thinking 回覆；Qwen runtime 必須能可靠關閉 thinking，且不得把
+  `<think>` 或 reasoning content 送入 `SentenceGate`、TTS、記憶或診斷。
+- 本地 provider 必須沿用 typed frame、generation／attempt correlation、三句 gate、兩階段
+  memory proposal 與中央取消契約。若 runtime 只會關閉 client stream、不能證明停止本機
+  推論，`remote_cancel` capability 必須如實標為 false。
+- 16GB 統一記憶體是硬限制；驗收必須同時涵蓋 Whisper、E5 與 release TTS 的實際組合，
+  記錄首 token 延遲、生成速度、peak memory、memory pressure／swap、thermal、30 輪穩定性、
+  取消後 late token／tool call 與既有端到端 p50／p95。不得降低原門檻換取通過。
+- 在 spike 與後續實作完成前，M3 的 OpenAI Responses、Terra／Luna、Keychain readiness、費用
+  ledger 與 rolling summary 行為仍是目前實作；文件不得宣稱 Lune 已經 local-only。
+
 ## STT 模型與取消邊界
 
 - STT 固定為 `mlx-community/whisper-large-v3-turbo-q4` revision

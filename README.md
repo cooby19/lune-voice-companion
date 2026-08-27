@@ -59,6 +59,19 @@ NT$700 改用 Luna，達 NT$900 則不再發出雲端請求。取消、錯誤或
 完整預留額保守估算。每筆 settled attempt 都寫入 SQLite，重新啟動後會先還原當月已確認成本，
 再接受新的 reservation。
 
+### 規劃中的本地 LLM 實驗
+
+目前 release 實作仍使用上述 OpenAI Responses provider，尚未提供可選的本地文字 LLM。
+專案已決定在 M6 完整 pipeline 組裝前，先於 MacBook Air M4／16GB 評估官方
+[`Qwen/Qwen3.5-9B`](https://huggingface.co/Qwen/Qwen3.5-9B) 的 Q4 量化版本。第一輪只測官方
+post-trained 模型，不使用 Roleplay fine-tune，也不把實驗結果描述為已取代 OpenAI。
+
+Q4 的模型格式與 runtime 尚未選定；候選必須先通過 non-thinking 串流、首 token 與端到端
+延遲、16GB memory pressure／swap、30 輪穩定性、中央取消、三句 gate，以及
+`propose_memory`／`propose_affinity` 工具呼叫 gate。模型可載入或能輸出中文，不等於可以作為
+即時語音 release backend。實驗前不會由 Lune 自動下載模型；模型 revision、檔案 checksum、
+offline 載入與本機 endpoint 邊界會在選定 runtime 後另行固定。
+
 ## 本機語音辨識模型
 
 M2 固定使用
