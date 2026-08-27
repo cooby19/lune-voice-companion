@@ -344,15 +344,28 @@ Roleplay fine-tune。2026-08-28 已將第一候選從 `Qwen3.5-9B` 改為 `Qwen3
 | `report.py` | 0600、`O_EXCL`、僅 allowlist 數值欄位的淨化報告 |
 | `fixtures.py` | 公開中／英／混流 prompt fixtures，不含 persona 或私人內容 |
 
-### 尚未執行，且需要使用者授權
+### 已授權並進行中（2026-08-28）
 
-1. 安裝所選 runtime。
-2. 下載 Q4 產物並建立逐檔 checksum，才能把 `LOCAL_LLM_PIN` 由 `None` 換成實際 pin。
-   官方 repository 沒有官方 Q4 版本，因此必須先決定採用第三方轉換或自行量化。
-3. 讀取私人 persona 以執行 12 題 rubric。
-4. 若選擇會增加第四個受管理程序或系統常駐服務的 runtime，屬於程序架構變更。
+使用者已授權：獨立 `mlx-lm` worker（接受第四個受管理程序）、下載官方權重後本機量化、
+讀取私人 persona 執行 rubric。已完成安裝隔離 runtime venv 與 worker／runner 實作；
+官方權重下載中（未登入 HF 約 0.8 MB/s，8.89 GB 需約 3–4 小時）。
 
-在這四項完成前，`decide_local_provider` 會持續回報 `openai_responses`，這是正確行為而不是
+| 元件 | 內容 |
+|---|---|
+| `qwen_worker.py` | 隔離 runtime 內的獨立 worker，不 import 任何 lune module；stdout 只走 protocol；token 間檢查 cancel，因此停止推論是可證明的 |
+| `worker.py` | host 監督者：環境 allowlist、強制 offline、generation fence、以自己 spawn 的 PID 終止 |
+| `sampling.py` | memory pressure、swap、thermal 與 RSS 讀取，缺值回 `unknown` 而非拋錯 |
+| `runner.py`、`scripts/run_local_llm_spike.py` | 收集證據、交給既有 gate 評分、輸出淨化報告 |
+| `scripts/build_local_llm_manifest.py` | 量化後逐檔 SHA-256、寫入 0600 manifest 並印出 pin literals |
+
+### 仍未完成
+
+1. 量化為 Q4 並以 `build_local_llm_manifest.py` 建立 pin，把 `LOCAL_LLM_PIN` 由 `None` 換掉。
+2. 執行延遲、記憶體、取消與工具呼叫 gate。
+3. 執行私人 persona 12 題 rubric。
+4. 依結果提出 M6 provider 決策。
+
+在這些完成前，`decide_local_provider` 會持續回報 `openai_responses`，這是正確行為而不是
 待修的缺陷。
 
 ### 決策範圍

@@ -85,6 +85,25 @@
 - `<think>` 濾除為串流實作，會處理跨 chunk 分割的標籤，且推理內容只計長度、不累積保存；
   出現任何推理內容都會記為違規，因為那代表 non-thinking 開關沒有生效。
 
+### 本地 LLM spike 授權與選型（2026-08-28 由使用者決定）
+
+- runtime 選定為 **獨立 `mlx-lm` worker**。使用者已明確接受它成為第四個受管理程序，理由是
+  可用終止自己 spawn 的 PID 達成真正取消，且模型權重不進 engine 位址空間。這推翻了計畫原本
+  固定的三 PID 假設，屬於已授權的程序架構變更。
+- Q4 產物來源選定為 **官方權重 + 本機量化**：下載官方 `Qwen/Qwen3.5-4B` revision
+  `851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a`，在本機量化為 Q4，再逐檔 SHA-256 建立 pin。
+  不採用第三方已量化產物，以維持「官方 post-trained 模型」的信任邊界。
+- 已授權讀取私人 persona 執行 12 題人格 rubric；題目與回答不進公開 repo 或診斷，只在本機
+  產生 0600 報告。
+- 實測發現：`Qwen/Qwen3.5-4B` 是 `Qwen3_5ForConditionalGeneration`，屬視覺語言模型，且採
+  hybrid linear attention。`mlx-lm` 0.31.3 的 `qwen3_5` 支援它的 `text_config`，並在
+  `sanitize()` 丟棄 `vision_tower` 權重，因此量化後的產物是純文字模型，語音路徑不會載入
+  視覺塔。
+- 實測發現：未登入的 Hugging Face 下載約 0.8 MB/s 且拒絕並行連線，官方權重 8.89 GB 需約
+  3–4 小時。使用者選擇等待，不改用第三方產物。
+- worker 只接受環境 allowlist、強制 `HF_HUB_OFFLINE`／`TRANSFORMERS_OFFLINE`、不繼承
+  API key 與真實 `HOME`，且只從 host 驗證過的本機目錄載入，永不解析 repository ID。
+
 ## STT 模型與取消邊界
 
 - STT 固定為 `mlx-community/whisper-large-v3-turbo-q4` revision
