@@ -5,8 +5,8 @@
 本文件原為 M1 完成後的公開、淨化版交接，目前已同步到 M6 的公開 gate。下一個聊天室進入
 M7（選單列 App、authenticated IPC 與 py2app 打包）。以下項目尚未執行，不得誤認為已通過：
 M2 local model／私人語料、M3 私人人格 rubric、M4 真實 E5、M5 私人 GPT 模型／效能 gate、
-M6 的 30 輪端到端 benchmark 與實體音訊 gate，以及 AVSpeech 在非主執行緒 run loop 上的實測。
-本地 LLM spike 的實機 gate 已完成，結論是本地即時路徑在此硬體上不成立。
+M6 的 30 輪端到端 benchmark 與實體音訊 gate。本地 LLM spike 的實機 gate 已完成，結論是本地
+即時路徑在此硬體上不成立；AVSpeech 的 run loop 需求已實測完畢並據此修正實作。
 
 ## 交接基準
 
@@ -546,6 +546,13 @@ STT adapter 內固定單一 window 尺寸，避免形狀反覆變動。
   `LLMFullResponseStartFrame` 更早抵達收集器，所以 M3 用顯式 attempt 關聯而不是佇列順序是正確的。
 - **`TextFrame.__str__` 會印出 payload。** M3 的 `repr=False` 只保護 `repr()`；
   `GenerationLLMTextFrame` 已自訂 `__str__`，其他 Lune frame 已確認安全。
+- **AVSpeech 的 buffer callback 只走主執行緒的 run loop。** 2026-08-28 實測：主 run loop 有
+  drain 得到 271 個 buffer，不 drain 為 0，把 run loop 放到其他執行緒同樣為 0；callback 送達的
+  執行緒與呼叫 `writeUtterance:` 的執行緒無關。因此 `MainRunLoopPump` 在 asyncio 迴圈內
+  非阻塞 drain 主 run loop。若 M7 的 App 程序自己已在轉主 run loop，可注入別的 `RunLoopHost`。
+- **AVSpeech 一次寫出整段 utterance。** 一句約三秒的中文在 consumer 被排程前就送出 271 個
+  buffer，原本 32 個 chunk 的 bounded queue 會直接 overflow 成 `synthesis_failed`。預設容量已
+  提高到 512；這個上限不能再調回小值，否則 release 預設語音路徑會在正常輸入上失敗。
 
 ### Gate
 
@@ -564,14 +571,16 @@ STT adapter 內固定單一 window 尺寸，避免形狀反覆變動。
 - 30 個暖機 turns 的端到端 p50 ≤1.5 s、p95 ≤2.2 s。需要實體麥克風、已放置的 Whisper 與 E5
   模型、私人 persona 與 API key。依既有實測拆解，此門檻在目標硬體上無法達成，主因是
   Whisper 固定 30 秒 mel window，不是 LLM 選擇；因此 release 預設維持 AVSpeech。
-- AVSpeech 是否會在非主執行緒的 run loop 上送出 buffer。M6 已讓 driver 自帶 run loop 執行緒
-  並可由 `RunLoopHost` 抽換，但這一點需要在目標 Mac 上另行授權實測。
+（AVSpeech 的 run loop 需求已於 2026-08-28 實測完畢，並據此修正實作與 queue 容量。以 Lune
+自己的 adapter 量測到的 TTFA 為中文 450／119 ms、英文 280／118 ms、混流 121／118 ms
+（冷／暖），取消在第一個 chunk 後停止。詳見 `progress.md`。）
 
 ### 交給 M7 的缺口
 
 - `lune.engine` 仍未組裝 pipeline；`build_voice_pipeline` 只提供組裝點。
 - 真正的 PyAudio／CoreAudio 輸入 stream owner 與 `AudioOutputDevice` 實作都還沒有。
-- 若實測顯示 AVSpeech 需要主 run loop，App 程序要負責提供，driver 只需換掉 `RunLoopHost`。
+- AVSpeech 需要主執行緒 run loop 被 drain。engine 目前由 `MainRunLoopPump` 自己處理；若 App
+  程序本身已在轉主 run loop，改注入別的 `RunLoopHost` 即可，不要退回 worker thread 版本。
 
 ## M7：選單列 App、IPC 與打包
 

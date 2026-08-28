@@ -144,10 +144,14 @@
 - 端到端門檻維持 p50 ≤1.5 s、p95 ≤2.2 s，量測與評分放在 `lune.pipeline.benchmark`，
   證據不足時判定失敗。依既有實測拆解，此門檻在目標硬體上無法達成；是否縮短 Whisper
   輸入 window、更換模型或調整門檻，是尚未做出的產品決策，不得自行放寬。
-- `AVSpeechSynthesizer` 的 buffer callback 需要運轉中的 `CFRunLoop`，而 engine 是純
-  asyncio 程序，因此 driver 自帶一條擁有 run loop 的執行緒。這是為了不強迫 engine 或
-  未來的 UI 程序去 pump Core Foundation；run loop 位置可由 `RunLoopHost` 抽換，若實測
-  顯示 AVSpeech 只在主執行緒送出 buffer，M7 可改為由 App 的主 run loop 提供。
+- `AVSpeechSynthesizer` 的 buffer callback 只會送到**主執行緒**，而且只有主執行緒的
+  `CFRunLoop` 被 drain 時才會送出（2026-08-28 目標機實測：主 run loop 有 drain 得到 271 個
+  buffer，不 drain 為 0，run loop 放在其他執行緒也是 0）。因此 driver 使用
+  `MainRunLoopPump`，在 asyncio 迴圈內以非阻塞方式 drain 主 run loop，沒有資料時自動放慢。
+  位置仍由 `RunLoopHost` 抽換，M7 的 App 程序若已自行運轉主 run loop，可改注入自己的實作。
+- AVSpeech 以爆發方式寫出整段 utterance，因此 adapter 的 bounded queue 必須容得下一整句。
+  預設由 32 提高到 512（約十秒、約 0.5 MB）。背壓在此不可行：callback 是原生 push，
+  阻塞主執行緒會拖垮整個程序，所以超出上限仍以失敗收場，而不是無界成長。
 
 ## 私人資料
 

@@ -1,15 +1,38 @@
 from __future__ import annotations
 
-import threading
-import time
+import asyncio
 from collections.abc import Callable
+from typing import Any
 
 import pytest
 
 from lune.tts.contracts import TTSBackendError
-from lune.tts.runloop import CFRunLoopThread, RunLoopUnavailable
+from lune.tts.runloop import MainRunLoopPump, RunLoopUnavailable
 
-pytest.importorskip("CoreFoundation", reason="Core Foundation is only present on macOS")
+_RUN_HANDLED_SOURCE = 4
+_RUN_FINISHED = 1
+
+
+class FakeCoreFoundation:
+    """Stand in for Core Foundation so pump behaviour is deterministic."""
+
+    kCFRunLoopDefaultMode = "default"
+
+    def __init__(self, *, handled: int = 0) -> None:
+        self.calls: list[tuple[Any, float, bool]] = []
+        self._remaining_handled = handled
+
+    def CFRunLoopRunInMode(
+        self,
+        mode: Any,
+        seconds: float,
+        return_after_source_handled: bool,
+    ) -> int:
+        self.calls.append((mode, seconds, return_after_source_handled))
+        if self._remaining_handled > 0:
+            self._remaining_handled -= 1
+            return _RUN_HANDLED_SOURCE
+        return _RUN_FINISHED
 
 
 class RecordingRunLoop:
@@ -27,63 +50,77 @@ class RecordingRunLoop:
         self.closed = True
 
 
-def test_work_runs_on_the_thread_that_owns_the_run_loop() -> None:
-    host = CFRunLoopThread(slice_s=0.005, idle_slice_s=0.005)
-    done = threading.Event()
-    threads: list[int] = []
+@pytest.mark.asyncio
+async def test_submitted_work_runs_inline_and_starts_the_pump() -> None:
+    core = FakeCoreFoundation()
+    pump = MainRunLoopPump(interval_s=0.001, idle_interval_s=0.002, core=core)
+    ran: list[int] = []
 
-    def work() -> None:
-        threads.append(threading.get_ident())
-        done.set()
+    pump.submit(lambda: ran.append(1))
 
-    host.submit(work)
-    assert done.wait(timeout=5.0) is True
-    assert threads and threads[0] != threading.get_ident()
-    host.close()
-    assert host.running is False
-
-
-def test_a_failing_work_item_is_counted_and_the_loop_survives() -> None:
-    host = CFRunLoopThread(slice_s=0.005, idle_slice_s=0.005)
-    done = threading.Event()
-
-    def broken() -> None:
-        raise RuntimeError("callback blew up")
-
-    host.submit(broken)
-    host.submit(done.set)
-    assert done.wait(timeout=5.0) is True
-    assert host.failed_work_items == 1
-    host.close()
+    assert ran == [1]
+    assert pump.running is True
+    await asyncio.sleep(0.02)
+    assert core.calls
+    assert core.calls[0] == ("default", 0, False)
+    pump.close()
+    assert pump.running is False
 
 
-def test_a_closed_run_loop_refuses_more_work() -> None:
-    host = CFRunLoopThread(slice_s=0.005, idle_slice_s=0.005)
-    host.close()
-    host.close()
+@pytest.mark.asyncio
+async def test_the_pump_drains_without_blocking_the_event_loop() -> None:
+    core = FakeCoreFoundation(handled=5)
+    pump = MainRunLoopPump(interval_s=0.001, idle_interval_s=0.5, core=core)
+    pump.submit(lambda: None)
+
+    ticks = 0
+    for _ in range(30):
+        await asyncio.sleep(0.001)
+        ticks += 1
+
+    assert ticks == 30
+    assert pump.drains >= 5
+    pump.close()
+
+
+@pytest.mark.asyncio
+async def test_an_idle_pump_backs_off_instead_of_spinning() -> None:
+    core = FakeCoreFoundation()
+    pump = MainRunLoopPump(interval_s=0.001, idle_interval_s=1.0, core=core)
+    pump.submit(lambda: None)
+    await asyncio.sleep(0.05)
+    idle_drains = pump.drains
+
+    await asyncio.sleep(0.05)
+    assert pump.drains == idle_drains
+
+    pump.submit(lambda: None)
+    await asyncio.sleep(0.01)
+    assert pump.drains > idle_drains
+    pump.close()
+
+
+@pytest.mark.asyncio
+async def test_a_closed_pump_refuses_more_work() -> None:
+    pump = MainRunLoopPump(core=FakeCoreFoundation())
+    pump.submit(lambda: None)
+    pump.close()
+    pump.close()
     with pytest.raises(RunLoopUnavailable):
-        host.submit(lambda: None)
+        pump.submit(lambda: None)
 
 
-def test_the_work_queue_is_bounded() -> None:
-    host = CFRunLoopThread(slice_s=0.005, idle_slice_s=0.005, queue_capacity=1)
-    blocked = threading.Event()
-    host.submit(blocked.wait)
-    time.sleep(0.05)
-    host.submit(lambda: None)
+def test_the_pump_needs_a_running_asyncio_loop() -> None:
+    pump = MainRunLoopPump(core=FakeCoreFoundation())
     with pytest.raises(RunLoopUnavailable):
-        host.submit(lambda: None)
-    blocked.set()
-    host.close()
+        pump.submit(lambda: None)
 
 
-def test_an_idle_loop_does_not_spin_a_core() -> None:
-    host = CFRunLoopThread(slice_s=0.01, idle_slice_s=0.02)
-    started = time.process_time()
-    time.sleep(0.3)
-    consumed = time.process_time() - started
-    host.close()
-    assert consumed < 0.15
+def test_intervals_are_validated() -> None:
+    with pytest.raises(ValueError):
+        MainRunLoopPump(interval_s=0.0, core=FakeCoreFoundation())
+    with pytest.raises(ValueError):
+        MainRunLoopPump(interval_s=0.05, idle_interval_s=0.01, core=FakeCoreFoundation())
 
 
 def test_the_native_driver_routes_avfoundation_calls_through_the_run_loop() -> None:

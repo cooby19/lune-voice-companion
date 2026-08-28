@@ -1,14 +1,13 @@
-"""A worker thread whose ``CFRunLoop`` keeps turning for callback-based macOS APIs."""
+"""Keep the main thread's Core Foundation run loop turning for AVSpeech."""
 
 from __future__ import annotations
 
-import queue
-import threading
+import asyncio
 from collections.abc import Callable
 from typing import Any, Final, Protocol
 
-_RUN_FINISHED: Final[int] = 1
-"""``kCFRunLoopRunFinished``: the loop had nothing to wait on and returned at once."""
+_RUN_HANDLED_SOURCE: Final[int] = 4
+"""``kCFRunLoopRunHandledSource``: the drain actually delivered something."""
 
 
 class RunLoopHost(Protocol):
@@ -17,114 +16,115 @@ class RunLoopHost(Protocol):
     def close(self) -> None: ...
 
 
+class CoreFoundationLike(Protocol):
+    """The two Core Foundation symbols the pump needs, named as they are there."""
+
+    kCFRunLoopDefaultMode: Any
+
+    def CFRunLoopRunInMode(
+        self,
+        mode: Any,
+        seconds: float,
+        return_after_source_handled: bool,
+    ) -> int: ...
+
+
 class RunLoopUnavailable(RuntimeError):
-    """The Core Foundation run loop could not be started on this host."""
+    """The Core Foundation run loop cannot be driven in this process."""
 
 
-class CFRunLoopThread:
-    """Serialize Core Foundation work onto one thread with a running run loop.
+class MainRunLoopPump:
+    """Drain the main run loop from inside the asyncio loop that owns it.
 
-    ``AVSpeechSynthesizer.writeUtterance:toBufferCallback:`` delivers nothing
-    while no run loop is turning, and Lune's engine is an asyncio process with no
-    run loop of its own. Owning one here keeps the release TTS path working
-    without forcing every embedder to pump Core Foundation.
+    Measured on the target Mac: ``AVSpeechSynthesizer`` delivers
+    ``writeUtterance:toBufferCallback:`` buffers **only** on the main thread's
+    run loop, whichever thread asked for them, and delivers nothing while that
+    run loop is not turning. A run loop on any other thread produced zero
+    buffers, so the synthesis work cannot simply be moved off the main thread.
+
+    Lune's engine runs asyncio on the main thread, so the pump is an asyncio
+    task doing a non-blocking drain rather than a second thread. It slows down
+    on its own once nothing is being delivered, and a new submission wakes it
+    immediately instead of waiting out the idle interval.
     """
 
     def __init__(
         self,
         *,
-        slice_s: float = 0.01,
-        idle_slice_s: float = 0.05,
-        queue_capacity: int = 64,
-        start_timeout_s: float = 5.0,
-        name: str = "lune-runloop",
+        interval_s: float = 0.005,
+        idle_interval_s: float = 0.05,
+        core: CoreFoundationLike | None = None,
     ) -> None:
-        if slice_s <= 0 or idle_slice_s <= 0 or start_timeout_s <= 0:
-            raise ValueError("run loop intervals must be positive")
-        if queue_capacity < 1:
-            raise ValueError("run loop queue capacity must be positive")
-        self._slice_s = slice_s
-        self._idle_slice_s = idle_slice_s
-        self._work: queue.Queue[Callable[[], None]] = queue.Queue(maxsize=queue_capacity)
-        self._stopping = threading.Event()
-        self._started = threading.Event()
-        self._pending = threading.Event()
-        self._failure: BaseException | None = None
-        self._failed_work = 0
-        self._loop: Any = None
-        self._core: Any = None
-        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
-        self._thread.start()
-        if not self._started.wait(timeout=start_timeout_s):
-            self._stopping.set()
-            raise RunLoopUnavailable("the run loop thread did not start")
-        if self._failure is not None:
-            raise RunLoopUnavailable("Core Foundation is unavailable") from self._failure
+        if interval_s <= 0 or idle_interval_s < interval_s:
+            raise ValueError("the idle interval cannot be shorter than the active one")
+        self._interval_s = interval_s
+        self._idle_interval_s = idle_interval_s
+        self._core = core if core is not None else _load_core_foundation()
+        self._nudge = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+        self._closed = False
+        self._drains = 0
 
     @property
-    def failed_work_items(self) -> int:
-        return self._failed_work
+    def drains(self) -> int:
+        """How often the run loop has been drained, for tests and diagnostics."""
+
+        return self._drains
 
     @property
     def running(self) -> bool:
-        return self._thread.is_alive() and not self._stopping.is_set()
+        return self._task is not None and not self._task.done()
 
     def submit(self, work: Callable[[], None]) -> None:
-        if self._stopping.is_set():
-            raise RunLoopUnavailable("the run loop thread is closed")
-        try:
-            self._work.put_nowait(work)
-        except queue.Full as error:
-            raise RunLoopUnavailable("the run loop queue is saturated") from error
-        self._wake()
+        """Run one Core Foundation call and make sure its callbacks can arrive.
+
+        The work runs inline: the caller is already on the loop that owns the
+        run loop, and hopping threads would not change where AVSpeech delivers.
+        """
+
+        if self._closed:
+            raise RunLoopUnavailable("the run loop pump is closed")
+        self._start()
+        self._nudge.set()
+        work()
 
     def close(self) -> None:
-        if self._stopping.is_set():
+        if self._closed:
             return
-        self._stopping.set()
-        self._wake()
-        self._thread.join(timeout=self._idle_slice_s * 20)
+        self._closed = True
+        task = self._task
+        self._task = None
+        if task is not None and not task.done():
+            task.cancel()
 
-    def _wake(self) -> None:
-        self._pending.set()
-        if self._core is not None and self._loop is not None:
-            self._core.CFRunLoopStop(self._loop)
-
-    def _run(self) -> None:
+    def _start(self) -> None:
+        if self._task is not None and not self._task.done():
+            return
         try:
-            import CoreFoundation  # type: ignore[import-untyped]
-        except ImportError as error:  # pragma: no cover - macOS-only dependency
-            self._failure = error
-            self._started.set()
-            return
-        self._core = CoreFoundation
-        self._loop = CoreFoundation.CFRunLoopGetCurrent()
-        mode = CoreFoundation.kCFRunLoopDefaultMode
-        self._started.set()
-        while not self._stopping.is_set():
-            handled = self._drain()
-            interval = self._slice_s if handled else self._idle_slice_s
-            result = CoreFoundation.CFRunLoopRunInMode(mode, interval, False)
-            if result == _RUN_FINISHED and not handled:
-                # With no sources attached the call returns immediately. Waiting
-                # on the submit event keeps an idle synthesizer from spinning a
-                # whole core while still picking new work up without delay.
-                self._pending.wait(timeout=interval)
-                self._pending.clear()
-        self._drain()
+            asyncio.get_running_loop()
+        except RuntimeError as error:
+            raise RunLoopUnavailable("the run loop pump needs a running asyncio loop") from error
+        self._task = asyncio.create_task(self._run(), name="lune-runloop-pump")
 
-    def _drain(self) -> bool:
-        handled = False
-        while True:
+    async def _run(self) -> None:
+        mode = self._core.kCFRunLoopDefaultMode
+        while not self._closed:
+            handled = self._core.CFRunLoopRunInMode(mode, 0, False) == _RUN_HANDLED_SOURCE
+            self._drains += 1
+            active = handled or self._nudge.is_set()
+            self._nudge.clear()
+            if active:
+                await asyncio.sleep(self._interval_s)
+                continue
             try:
-                work = self._work.get_nowait()
-            except queue.Empty:
-                return handled
-            handled = True
-            try:
-                work()
-            except Exception:
-                # Work items own their own error reporting; one failing item must
-                # not take the run loop down with it. The count stays observable
-                # so a silently broken driver cannot look healthy.
-                self._failed_work += 1
+                await asyncio.wait_for(self._nudge.wait(), timeout=self._idle_interval_s)
+            except TimeoutError:
+                continue
+
+
+def _load_core_foundation() -> CoreFoundationLike:
+    try:
+        import CoreFoundation  # type: ignore[import-untyped]
+    except ImportError as error:  # pragma: no cover - macOS-only dependency
+        raise RunLoopUnavailable("Core Foundation is unavailable") from error
+    return CoreFoundation  # type: ignore[no-any-return]

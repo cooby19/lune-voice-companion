@@ -158,10 +158,18 @@ PCM。Router 只在 utterance 開始前選擇一次後端；GPT-SoVITS 若在第
 它使用 Apple 的 buffer callback 取得 PCM，取消時使用 immediate boundary；不直接播放到系統
 輸出，因此仍由 Lune 的 generation fence 與音訊 transport 管理播放。
 
-`writeUtterance:toBufferCallback:` 只有在有運轉中的 `CFRunLoop` 時才會送出 buffer，而 engine
-是純 asyncio 程序。因此 M6 讓 driver 自帶一條擁有 run loop 的執行緒，所有 AVFoundation 呼叫
-都排到該執行緒；閒置時以事件等待而非輪詢，避免空轉整顆核心。這條 run loop 執行緒的行為已有
-公開測試，但「AVSpeech 是否願意在非主執行緒的 run loop 上送出 buffer」尚未在目標 Mac 實測。
+`writeUtterance:toBufferCallback:` 只有在**主執行緒**的 `CFRunLoop` 運轉時才會送出 buffer，
+而 engine 是純 asyncio 程序。目標機實測：主執行緒 run loop 有被 drain 時可取得 271 個 buffer，
+完全不 drain 時為 0 個，把 run loop 放在其他執行緒同樣為 0 個；callback 一律送到主執行緒，
+與呼叫 `writeUtterance:` 的是哪條執行緒無關。因此 driver 透過 `MainRunLoopPump` 在 asyncio
+迴圈內以非阻塞方式 drain 主 run loop，並在沒有資料時自動放慢。
+
+AVSpeech 會把整段 utterance 以爆發方式一次寫出，而不是即時串流：一句約三秒的中文會在
+consumer 被排程之前就送出 271 個 buffer，因此 adapter 的 bounded queue 預設放大到 512
+（約十秒、約 0.5 MB），仍會對異常長的輸入 fail closed。
+
+以 Lune 自己的 adapter 實測（僅寫入記憶體，未開啟輸出裝置）：中文冷啟動 TTFA 450 ms、
+暖啟動 119 ms；英文 280／118 ms；中英混流 121／118 ms；取消在第一個 chunk 後即停止。
 
 實驗性 GPT-SoVITS runtime 固定到官方 commit
 [`48b1a0169a28582a8984402f82cf438d3bfa6aca`](https://github.com/RVC-Boss/GPT-SoVITS/tree/48b1a0169a28582a8984402f82cf438d3bfa6aca)，

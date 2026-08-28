@@ -10,7 +10,16 @@ import numpy as np
 from numpy.typing import NDArray
 
 from lune.tts.contracts import PCMChunk, TTSBackendError, TTSLanguageHint, TTSRequest
-from lune.tts.runloop import CFRunLoopThread, RunLoopHost, RunLoopUnavailable
+from lune.tts.runloop import MainRunLoopPump, RunLoopHost, RunLoopUnavailable
+
+DEFAULT_QUEUE_CAPACITY = 512
+"""AVSpeech writes a whole utterance in one burst rather than in real time.
+
+Measured on the target Mac: a five-second Chinese sentence arrives as 271
+buffers before the consumer is scheduled even once, so a small bound would
+reject ordinary speech. 512 buffers is roughly ten seconds of audio and about
+half a megabyte, which still fails closed on pathological input.
+"""
 
 type NativePCM = tuple[int, int, bytes]
 type NativeItem = NativePCM | TTSBackendError | None
@@ -33,9 +42,10 @@ class AVSpeechDriver(Protocol):
 class _NativeAVSpeechDriver:
     """Small lazy PyObjC boundary; importing the module is safe off macOS.
 
-    ``writeUtterance:toBufferCallback:`` delivers no buffer at all unless a run
-    loop is turning, and Lune's engine is a plain asyncio process. Every
-    AVFoundation call therefore runs on a thread that owns a live ``CFRunLoop``.
+    ``writeUtterance:toBufferCallback:`` delivers no buffer at all unless the
+    main thread's run loop is turning, and Lune's engine is a plain asyncio
+    process. Every AVFoundation call therefore goes through a ``RunLoopHost``
+    that keeps that run loop drained for as long as synthesis needs it.
     """
 
     def __init__(self, run_loop: RunLoopHost | None = None) -> None:
@@ -51,7 +61,7 @@ class _NativeAVSpeechDriver:
             self._run_loop: RunLoopHost = run_loop
             return
         try:
-            self._run_loop = CFRunLoopThread(name="lune-avspeech")
+            self._run_loop = MainRunLoopPump()
         except RunLoopUnavailable as error:
             raise TTSBackendError("backend_unavailable") from error
 
@@ -166,7 +176,7 @@ class AVSpeechAdapter:
         self,
         driver: AVSpeechDriver | None = None,
         *,
-        queue_capacity: int = 32,
+        queue_capacity: int = DEFAULT_QUEUE_CAPACITY,
     ) -> None:
         if queue_capacity < 1:
             raise ValueError("queue capacity must be positive")

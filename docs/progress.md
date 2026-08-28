@@ -97,10 +97,32 @@
   + TTS TTFA），端到端 p50 ≤1.5 s 在目標 MacBook Air M4 上不可能達成，且主因是 Whisper 的
   固定 30 秒 mel window，不是 LLM 選擇。M6 因此保留原門檻與失敗判定，release 預設維持
   AVSpeech；是否縮短 Whisper window、更換模型或調整門檻仍是未決的產品決策。
-- M6 修正 M5 的 AVSpeech run loop 缺口：driver 現在自帶一條擁有 `CFRunLoop` 的執行緒，並把所有
-  AVFoundation 呼叫排到該執行緒。run loop 執行緒本身（工作排程、關閉、失敗計數、佇列上限、
-  閒置不空轉）有公開測試，但 **AVSpeech 是否會在非主執行緒的 run loop 上送出 buffer 尚未實測**，
-  需要另外授權才能在目標 Mac 上驗證。
+- M6 修正 M5 的 AVSpeech run loop 缺口，並已於 2026-08-28 在目標 Mac 實測（僅合成到記憶體，
+  未開啟麥克風或輸出裝置，未讀取任何私人資產）：
+
+  | 情境 | buffer 數 | 首個 buffer |
+  |---|---|---|
+  | 主執行緒 run loop 有 drain | 271 | 300 ms |
+  | 由 worker thread 呼叫、主 run loop 有 drain | 271 | 140 ms |
+  | 完全不 drain run loop | 0 | 無 |
+  | run loop 放在專用 worker thread | 0 | 無 |
+
+  結論：callback 一律送到**主執行緒**，與呼叫 `writeUtterance:` 的執行緒無關；只有主執行緒的
+  run loop 被 drain 時才會有資料。第一版實作把 run loop 放在專用執行緒是錯的，已改為
+  `MainRunLoopPump`：在 asyncio 迴圈內以非阻塞方式 drain 主 run loop，閒置時自動放慢。
+- 上述修正暴露另一個 M5 缺陷：AVSpeech 會把整段 utterance 以爆發方式寫出，一句約三秒的中文
+  在 consumer 被排程前就送出 271 個 buffer，使原本 32 個 chunk 的 bounded queue 直接 overflow
+  並回報 `synthesis_failed`。預設容量已改為 512（約十秒、約 0.5 MB），仍對異常長輸入 fail closed。
+- 以 Lune 自己的 `AVSpeechAdapter` 實測（同樣只寫記憶體）：
+
+  | 語料 | 冷啟動 TTFA | 暖啟動 TTFA | 音訊長度 |
+  |---|---|---|---|
+  | 中文 | 450 ms | 119 ms | 3,143 ms |
+  | 英文 | 280 ms | 118 ms | 2,206 ms |
+  | 中英混流 | 121 ms | 118 ms | 4,059 ms |
+
+  取消在第一個 chunk 之後即停止。TTFA 高於 handoff 先前記錄的 p50 28 ms，因為那次量測是以緊迴圈
+  直接 pump 主 run loop，而 release 路徑是 5 ms 間隔的 asyncio pump 加上排程延遲。
 - M6 另修正一個既有隱私缺口：Pipecat 的 `TextFrame.__str__` 會印出 payload，使 M3 的
   `repr=False` 在 log、assertion 與例外訊息中失效。`GenerationLLMTextFrame` 現在自訂 `__str__`。
 - 硬體與私人模型報告只在本機產生；除非先完成淨化，否則不進版控。
@@ -110,8 +132,8 @@
 
 M2、M3、M4、M5、M6 的 public gate 與本地 LLM spike 的完整 gate（含實機延遲、記憶體、取消、
 工具呼叫與私人 persona rubric）均已執行完畢。M2 local model／私人語料、M4 真實 E5、
-M5 私人 GPT 模型／效能 gate、M6 的 30 輪端到端 benchmark 與實體音訊 gate，以及 AVSpeech 在
-非主執行緒 run loop 上的實測，仍未執行。
+M5 私人 GPT 模型／效能 gate，以及 M6 的 30 輪端到端 benchmark 與實體音訊 gate，仍未執行。
+AVSpeech 的 run loop 需求已於 2026-08-28 實測完畢並據此修正實作。
 
 本地 LLM spike 的結論是：`Qwen3.5-4B` Q4 在此硬體上行為正確、資源充裕，但首句延遲無法
 滿足既有端到端門檻。M6 的 LLM provider 因此仍是 `openai_responses`；`PipecatAttemptProvider`
