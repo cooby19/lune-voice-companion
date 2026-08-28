@@ -116,6 +116,39 @@
   latest-wins。`close()` 停止 Lune 管理的 asyncio worker，已進 native code 的 thread 自然結束，
   其結果不得輸出。
 
+## 完整管線與中央取消（M6，2026-08-28）
+
+- 固定路徑為 `LocalAudioTransport.input → VoiceTurnGate → LuneFinalOnlySTTService →
+  ContextEnricher → LLM provider → SentenceGate → TTSRouterService → PlaybackSink`，
+  由 `build_voice_pipeline` 組裝，避免不同呼叫端各自接線。
+- `GenerationCoordinator` 是唯一能推進 generation 的元件。取消時先同步遞增 ID 再拆除，
+  順序固定為：可聽輸出 → TTS → STT → provider（Pipecat `InterruptionFrame` 並排空）→
+  工具提案 → turn gate → transport。任一階段失敗都會記錄在 `CancelEvent.failed_stages`，
+  不會讓後續階段被跳過。
+- 200 ms 插話門檻量測的是「停止可聽輸出」這一段，因此它是取消流程的第一步，
+  provider 排空與 transport 重建都排在量測之後。
+- 插話是唯一允許音訊跨越 fence 的情況。turn gate 會保留進行中的 utterance、重新標記
+  generation，並在重新標記後的 PCM 追上前，暫時接受被打斷 generation 的殘留資料。
+  裝置切換、STT 逾時與輸出溢位一律丟棄，因為那些音訊不是使用者要說的下一句話。
+- turn gate 在同一次呼叫內就把 VAD 事件解析成擷取結果，並在產生任何事件後立即讓出控制權，
+  因此延遲事件無法擷取到已屬於新 generation 的音訊。輸入不連續（callback 被丟棄）會重建
+  取樣時間軸並丟棄進行中的 utterance，而不是拼接錯位的音訊。
+- 工作狀態（`thinking`、`speaking`）綁定其 generation。取消後狀態自動回到 idle，
+  麥克風不會因為某個被取消的 turn 而卡在「AI 正在說話」的 300 ms 門檻。
+- `PipecatAttemptProvider` 以 Pipecat frame 契約橋接任何 `LLMService`。取消透過廣播
+  `InterruptionFrame` 完成，這正是 Responses WebSocket 送出 `response.cancel` 的路徑，
+  因此 `remote_cancel` 的宣告仍然誠實。`LLMThoughtTextFrame` 不是 `LLMTextFrame`，
+  推理內容不會經由這個對應進入 `SentenceGate` 或 TTS。
+- provider 回報的 cache 明細若與 input token 總數不一致，一律往「較少快取」方向夾擠。
+  這只會讓費用估得更高，不會低估。
+- 端到端門檻維持 p50 ≤1.5 s、p95 ≤2.2 s，量測與評分放在 `lune.pipeline.benchmark`，
+  證據不足時判定失敗。依既有實測拆解，此門檻在目標硬體上無法達成；是否縮短 Whisper
+  輸入 window、更換模型或調整門檻，是尚未做出的產品決策，不得自行放寬。
+- `AVSpeechSynthesizer` 的 buffer callback 需要運轉中的 `CFRunLoop`，而 engine 是純
+  asyncio 程序，因此 driver 自帶一條擁有 run loop 的執行緒。這是為了不強迫 engine 或
+  未來的 UI 程序去 pump Core Foundation；run loop 位置可由 `RunLoopHost` 抽換，若實測
+  顯示 AVSpeech 只在主執行緒送出 buffer，M7 可改為由 App 的主 run loop 提供。
+
 ## 私人資料
 
 - 私人資料根目錄：`~/Library/Application Support/Lune/`。

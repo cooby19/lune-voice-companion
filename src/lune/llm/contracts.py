@@ -49,6 +49,14 @@ class GenerationLLMTextFrame(LLMTextFrame):
         LLMTextFrame.__post_init__(self)  # type: ignore[no-untyped-call]
         _validate_correlation(self.generation_id, self.attempt_id)
 
+    def __str__(self) -> str:
+        # Pipecat's TextFrame.__str__ prints the payload, which would defeat the
+        # field's repr=False in logs, assertion output and exception messages.
+        return (
+            f"{type(self).__name__}(generation_id={self.generation_id!r}, "
+            f"attempt_id={self.attempt_id!r})"
+        )
+
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class GenerationFunctionCallFrame(FunctionCallInProgressFrame):

@@ -158,6 +158,11 @@ PCM。Router 只在 utterance 開始前選擇一次後端；GPT-SoVITS 若在第
 它使用 Apple 的 buffer callback 取得 PCM，取消時使用 immediate boundary；不直接播放到系統
 輸出，因此仍由 Lune 的 generation fence 與音訊 transport 管理播放。
 
+`writeUtterance:toBufferCallback:` 只有在有運轉中的 `CFRunLoop` 時才會送出 buffer，而 engine
+是純 asyncio 程序。因此 M6 讓 driver 自帶一條擁有 run loop 的執行緒，所有 AVFoundation 呼叫
+都排到該執行緒；閒置時以事件等待而非輪詢，避免空轉整顆核心。這條 run loop 執行緒的行為已有
+公開測試，但「AVSpeech 是否願意在非主執行緒的 run loop 上送出 buffer」尚未在目標 Mac 實測。
+
 實驗性 GPT-SoVITS runtime 固定到官方 commit
 [`48b1a0169a28582a8984402f82cf438d3bfa6aca`](https://github.com/RVC-Boss/GPT-SoVITS/tree/48b1a0169a28582a8984402f82cf438d3bfa6aca)，
 並須由使用者自行放在
@@ -178,6 +183,36 @@ Checkpoint checksum 只能確認檔案與私人 manifest 相符，不能排除 p
 任意程式碼執行風險。私人 GPT 模型的 TTFA、RTF、RSS、thermal 與取消 gate 尚未執行，
 因此即使設定要求 `gpt_sovits`，release factory 仍會保持 `avspeech`，直到該 gate 有明確通過
 證據。
+
+## 完整語音管線與中央取消
+
+M6 把 M1–M5 的元件組裝成唯一一條路徑：
+
+```text
+LocalAudioTransport.input → VoiceTurnGate → LuneFinalOnlySTTService
+  → ContextEnricher → LLM provider → SentenceGate → TTSRouterService → PlaybackSink
+```
+
+`GenerationCoordinator` 是唯一能作廢一個 generation 的入口。它先同步遞增 generation ID，
+讓仍在飛行中的 token、工具呼叫與 PCM 立即成為舊資料，接著依固定順序拆除：先停止可聽輸出
+（這段耗時就是 200 ms 插話門檻量測的值），再作廢 STT、對 provider 送出 Pipecat
+`InterruptionFrame` 並排空、撤銷未提交的工具提案，最後處理 turn gate 與 transport。
+
+插話是唯一允許音訊跨越 fence 的情況：打斷 Lune 的那段語音本身就是下一句話，因此 turn gate
+會保留進行中的 utterance 並重新標記 generation，同時在新 PCM 追上前暫時接受被打斷 generation
+的殘留資料。其他原因（裝置切換、STT 逾時、輸出佇列溢位）一律丟棄。
+
+所有佇列都有上限：輸出佇列滿載會取消該次生成而不是無限成長，輸入不連續會重建取樣時間軸而
+不是產生錯位的音訊。工作狀態（`thinking`、`speaking`）綁定其 generation，取消後自動回到可
+聆聽狀態，不會卡住麥克風。
+
+取消後不得播放的內容也不會落庫：使用者逐字稿在 final 接受後保存，assistant 內容只保存確實
+送到輸出裝置的句子，記憶與 affinity 提案只在該 generation 仍有效時提交。
+
+端到端延遲定義為「最後一個有聲輸入 sample → 第一個非靜音輸出 frame」，量測與門檻邏輯放在
+`lune.pipeline.benchmark`。30 輪暖機 benchmark 需要實體麥克風與本機模型，**尚未執行**；依
+既有實測拆解，原訂 p50 ≤1.5 s 在目標硬體上無法達成，詳見
+[`docs/progress.md`](docs/progress.md)。
 
 ## 隱私與私人聲線資產
 

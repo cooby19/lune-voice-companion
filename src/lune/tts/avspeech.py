@@ -10,6 +10,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from lune.tts.contracts import PCMChunk, TTSBackendError, TTSLanguageHint, TTSRequest
+from lune.tts.runloop import CFRunLoopThread, RunLoopHost, RunLoopUnavailable
 
 type NativePCM = tuple[int, int, bytes]
 type NativeItem = NativePCM | TTSBackendError | None
@@ -30,9 +31,14 @@ class AVSpeechDriver(Protocol):
 
 
 class _NativeAVSpeechDriver:
-    """Small lazy PyObjC boundary; importing the module is safe off macOS."""
+    """Small lazy PyObjC boundary; importing the module is safe off macOS.
 
-    def __init__(self) -> None:
+    ``writeUtterance:toBufferCallback:`` delivers no buffer at all unless a run
+    loop is turning, and Lune's engine is a plain asyncio process. Every
+    AVFoundation call therefore runs on a thread that owns a live ``CFRunLoop``.
+    """
+
+    def __init__(self, run_loop: RunLoopHost | None = None) -> None:
         try:
             import AVFoundation  # type: ignore[import-untyped]
         except ImportError as error:
@@ -41,6 +47,13 @@ class _NativeAVSpeechDriver:
         self._synthesizer: Any = AVFoundation.AVSpeechSynthesizer.alloc().init()
         self._callback: NativeCallback | None = None
         self._native_block: Callable[[Any], None] | None = None
+        if run_loop is not None:
+            self._run_loop: RunLoopHost = run_loop
+            return
+        try:
+            self._run_loop = CFRunLoopThread(name="lune-avspeech")
+        except RunLoopUnavailable as error:
+            raise TTSBackendError("backend_unavailable") from error
 
     def start(
         self,
@@ -49,11 +62,6 @@ class _NativeAVSpeechDriver:
         callback: NativeCallback,
     ) -> None:
         self._callback = callback
-        utterance = self._av.AVSpeechUtterance.speechUtteranceWithString_(text)
-        language = "en-US" if language_hint == "en" else "zh-TW"
-        voice = self._av.AVSpeechSynthesisVoice.voiceWithLanguage_(language)
-        if voice is not None:
-            utterance.setVoice_(voice)
 
         def receive(buffer: Any) -> None:
             active = self._callback
@@ -69,15 +77,36 @@ class _NativeAVSpeechDriver:
                 active(error)
 
         self._native_block = receive
-        self._synthesizer.writeUtterance_toBufferCallback_(utterance, receive)
+
+        def speak() -> None:
+            utterance = self._av.AVSpeechUtterance.speechUtteranceWithString_(text)
+            language = "en-US" if language_hint == "en" else "zh-TW"
+            voice = self._av.AVSpeechSynthesisVoice.voiceWithLanguage_(language)
+            if voice is not None:
+                utterance.setVoice_(voice)
+            self._synthesizer.writeUtterance_toBufferCallback_(utterance, receive)
+
+        self._submit(speak, callback)
 
     def stop(self) -> None:
-        self._synthesizer.stopSpeakingAtBoundary_(self._av.AVSpeechBoundaryImmediate)
+        self._submit(
+            lambda: self._synthesizer.stopSpeakingAtBoundary_(self._av.AVSpeechBoundaryImmediate),
+            self._callback,
+        )
 
     def close(self) -> None:
         self.stop()
         self._callback = None
         self._native_block = None
+        self._run_loop.close()
+
+    def _submit(self, work: Callable[[], None], callback: NativeCallback | None) -> None:
+        try:
+            self._run_loop.submit(work)
+        except RunLoopUnavailable as error:
+            if callback is None:
+                raise TTSBackendError("backend_unavailable") from error
+            callback(TTSBackendError("backend_unavailable"))
 
 
 def _buffer_to_pcm(buffer: Any, frame_length: int) -> NativePCM:

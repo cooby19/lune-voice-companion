@@ -26,6 +26,24 @@ def test_sensitive_provider_payloads_are_absent_from_repr() -> None:
     assert "私人記憶" not in repr(tool)
 
 
+def test_sensitive_provider_payloads_are_absent_from_str() -> None:
+    """Pipecat's ``TextFrame.__str__`` prints its payload; Lune's must not."""
+
+    text = GenerationLLMTextFrame(text="私人回覆", generation_id=3, attempt_id="attempt-3")
+    tool = GenerationFunctionCallFrame(
+        function_name="propose_memory",
+        tool_call_id="tool-1",
+        arguments={"content": "私人記憶"},
+        generation_id=3,
+        attempt_id="attempt-3",
+    )
+
+    assert "私人回覆" not in str(text)
+    assert "私人回覆" not in f"{text}"
+    assert "attempt-3" in str(text)
+    assert "私人記憶" not in str(tool)
+
+
 def test_usage_requires_attempt_correlation_and_consistent_details() -> None:
     with pytest.raises(ValueError, match="attempt ID"):
         AttemptUsageFrame(generation_id=1, attempt_id="", input_tokens=1)

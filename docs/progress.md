@@ -12,7 +12,7 @@
 | M4 | 完成（公開 gate） | 13 項 M4 tests／199 項完整 pytest；8-table migration、private SQLite pragmas／permissions、13th-turn rolling summary、E5 384 維 bounded retrieval、proposal dedupe／cancel、affinity audit、usage 重啟還原與 exact-ID CLI；[commit `a5ef5f0`](https://github.com/cooby19/lune-voice-companion/commit/a5ef5f0d36f29f53e34eb360604e90ee2177ff24)；[CI #33071346597](https://github.com/cooby19/lune-voice-companion/actions/runs/33071346597) |
 | M5 | 完成（公開 gate） | 27 項 M5 tests／226 項完整 pytest；typed utterance／PCM 契約、bounded length-prefix protocol、固定 GPT-SoVITS revision、Python 3.10 isolated worker、AVSpeech PCM callback、generation／sequence fence、500 ms cancel、worker crash／sandbox denial、整句 fallback 與 session circuit breaker；[commit `bd59740`](https://github.com/cooby19/lune-voice-companion/commit/bd59740e293e39aa7226ce49fadd4e85163afbbf)；[CI #33073392282](https://github.com/cooby19/lune-voice-companion/actions/runs/33073392282) |
 | M6 前置：本地 LLM spike | 完成（gate 已執行，效能未通過） | 102 項 spike tests／328 項完整 pytest；串流 `<think>` 濾除與違規記錄、pin 未建立即 fail-closed 的模型 manifest、loopback-only endpoint 政策、runtime 候選成本表、由端到端預算推導的首句延遲門檻、RSS／swap／queue 累積偵測、工具呼叫 schema 與每 turn 限額、取消證據與 `remote_cancel` 誠實標示、淨化報告；未安裝 runtime、未下載模型、未讀取私人 persona；[commit `c0a348e`](https://github.com/cooby19/lune-voice-companion/commit/c0a348ee14142b8a292240fa729c8659b09d0941)；[CI #33093928857](https://github.com/cooby19/lune-voice-companion/actions/runs/33093928857) |
-| M6 | 待處理 | 完整 pipeline 與插話 benchmark |
+| M6 | 完成（公開 gate）；端到端 benchmark 未執行 | 81 項新測試／447 項完整 pytest；唯一 `GenerationCoordinator`、barge-in carry-over turn gate、Pipecat provider bridge、bounded playback fence、STT watchdog、工具提案兩階段提交與 benchmark gate 邏輯；30 輪暖機端到端 benchmark 與實體音訊 gate 未執行 |
 | M7 | 待處理 | 選單列 App、authenticated IPC 與打包 |
 | M8 | 待處理 | Keychain、簽署、soak／隱私／release gate |
 
@@ -82,15 +82,42 @@
 - 依 `project-decisions.md`，4B Q4 未通過延遲 gate 即視為本地即時路徑在此硬體上不成立。
   是否改採 hybrid、維持 OpenAI 或退到更小尺寸是新的產品決策，尚未決定，不得自行降低門檻
   或靜默切換。
+- M6 的公開 gate 全部使用 deterministic fake：fake VAD 分類器、fake STT、scripted provider、
+  scripted TTS backend 與 recording output device。沒有開啟麥克風或輸出裝置，沒有載入 Whisper、
+  E5 或任何 LLM 權重，也沒有發出雲端請求。
+- M6 已驗證的行為：fence 在任何拆除動作之前就同步推進；可聽輸出在其他階段之前停止，且
+  `CancelEvent.audible_stop_ms` 就是 200 ms 門檻量測的值；插話後不再有舊 generation 的 PCM 到達
+  輸出裝置；被取消的 turn 不寫入逐字稿、assistant 內容、記憶或 affinity；插話語音會成為下一個
+  utterance 並帶著 pre-roll 送進 STT；STT 卡住由 watchdog 取消並保持可重新聆聽；輸出佇列溢位
+  取消該次生成；裝置切換取消並在內建喇叭時暫停。
+- M6 的 **30 輪暖機端到端 benchmark 未執行**：它需要實體麥克風、已放置的 Whisper 與 E5 模型、
+  私人 persona 與 API key。`lune.pipeline.benchmark` 只提供量測與評分邏輯，並在證據不足時判定
+  失敗，不會因缺資料而通過。
+- 依 handoff 已記錄的實測拆解（句尾靜音 350 ms + Whisper final p50 約 1,959 ms + LLM 首句
+  + TTS TTFA），端到端 p50 ≤1.5 s 在目標 MacBook Air M4 上不可能達成，且主因是 Whisper 的
+  固定 30 秒 mel window，不是 LLM 選擇。M6 因此保留原門檻與失敗判定，release 預設維持
+  AVSpeech；是否縮短 Whisper window、更換模型或調整門檻仍是未決的產品決策。
+- M6 修正 M5 的 AVSpeech run loop 缺口：driver 現在自帶一條擁有 `CFRunLoop` 的執行緒，並把所有
+  AVFoundation 呼叫排到該執行緒。run loop 執行緒本身（工作排程、關閉、失敗計數、佇列上限、
+  閒置不空轉）有公開測試，但 **AVSpeech 是否會在非主執行緒的 run loop 上送出 buffer 尚未實測**，
+  需要另外授權才能在目標 Mac 上驗證。
+- M6 另修正一個既有隱私缺口：Pipecat 的 `TextFrame.__str__` 會印出 payload，使 M3 的
+  `repr=False` 在 log、assertion 與例外訊息中失效。`GenerationLLMTextFrame` 現在自訂 `__str__`。
 - 硬體與私人模型報告只在本機產生；除非先完成淨化，否則不進版控。
 - 每個里程碑必須先通過該階段 gate、更新本文件、建立可回退 commit 並 push，才進入下一階段。
 
 ## 後續交接
 
-M2、M3、M4、M5 的 public gate 與本地 LLM spike 的完整 gate（含實機延遲、記憶體、取消、
+M2、M3、M4、M5、M6 的 public gate 與本地 LLM spike 的完整 gate（含實機延遲、記憶體、取消、
 工具呼叫與私人 persona rubric）均已執行完畢。M2 local model／私人語料、M4 真實 E5、
-M5 私人 GPT 模型／效能 gate 仍未執行。
+M5 私人 GPT 模型／效能 gate、M6 的 30 輪端到端 benchmark 與實體音訊 gate，以及 AVSpeech 在
+非主執行緒 run loop 上的實測，仍未執行。
 
 本地 LLM spike 的結論是：`Qwen3.5-4B` Q4 在此硬體上行為正確、資源充裕，但首句延遲無法
-滿足既有端到端門檻。M6 的 LLM provider 因此仍是 `openai_responses`，等待使用者就
-hybrid、維持 OpenAI 或改用更小模型做出新的產品決策後，才能固定 M6 pipeline 組成。
+滿足既有端到端門檻。M6 的 LLM provider 因此仍是 `openai_responses`；`PipecatAttemptProvider`
+以 Pipecat frame 契約為介面，換成別的 provider 不需要改動 pipeline。等待使用者就 hybrid、
+維持 OpenAI 或改用更小模型做出新的產品決策後，才能固定最終組成。
+
+M7 需要接手的部分：engine 目前仍未組裝 pipeline，`build_voice_pipeline` 只提供組裝點；真正的
+PyAudio／CoreAudio stream owner、`AudioOutputDevice` 實作、rumps UI 與 authenticated IPC 都還
+沒有。

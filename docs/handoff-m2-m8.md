@@ -2,11 +2,11 @@
 
 更新日期：2026-08-28
 
-本文件原為 M1 完成後的公開、淨化版交接，目前已同步 M2、M3、M4、M5 remote gate 與
-本地 LLM spike 的公開 gate。後續聊天室應先取得授權、完成本地 LLM spike 的 runtime、
-模型與硬體 gate，再固定 M6 pipeline；M2 local model／私人語料、M3 私人人格 rubric、
-M4 真實 E5、M5 私人 GPT 模型／效能 gate，以及 Qwen 的實機 gate 尚未執行，不得誤認為
-已通過。
+本文件原為 M1 完成後的公開、淨化版交接，目前已同步到 M6 的公開 gate。下一個聊天室進入
+M7（選單列 App、authenticated IPC 與 py2app 打包）。以下項目尚未執行，不得誤認為已通過：
+M2 local model／私人語料、M3 私人人格 rubric、M4 真實 E5、M5 私人 GPT 模型／效能 gate、
+M6 的 30 輪端到端 benchmark 與實體音訊 gate，以及 AVSpeech 在非主執行緒 run loop 上的實測。
+本地 LLM spike 的實機 gate 已完成，結論是本地即時路徑在此硬體上不成立。
 
 ## 交接基準
 
@@ -31,10 +31,11 @@ M4 真實 E5、M5 私人 GPT 模型／效能 gate，以及 Qwen 的實機 gate �
 | 本地 LLM spike 公開 gate | 102 項 spike tests／328 項完整 pytest，已通過 |
 | 本地 LLM spike commit | `c0a348e`（`M6 prerequisite: add local Qwen spike gates`），已 push |
 | 本地 LLM spike CI | [GitHub Actions #33093928857](https://github.com/cooby19/lune-voice-companion/actions/runs/33093928857)，已通過 |
-| 下一階段 | 取得授權後執行本地 LLM spike 的 runtime／模型／硬體 gate；之後為 M6 中央取消與完整管線 |
+| M6 本機 gate | 81 項新測試／447 項完整 pytest；中央取消、turn gate fence、Pipecat provider bridge、bounded playback、錯誤與取消恢復，已通過 |
+| 下一階段 | M7 選單列 App、authenticated IPC 與 py2app 打包；M6 的 30 輪端到端 benchmark 仍待授權執行 |
 
-目前完成 M0、M0.5、M1、M2、M3、M4、M5 的 public／remote gate 與本地 LLM spike 的
-public gate；spike 的實機 gate 與 M6–M8 尚未實作。本機可能已有私人設定，但私人 persona、
+目前完成 M0、M0.5、M1、M2、M3、M4、M5、M6 的 public gate 與本地 LLM spike 的完整 gate；
+M6 的 30 輪端到端 benchmark 與實體音訊 gate 尚未執行，M7–M8 尚未實作。本機可能已有私人設定，但私人 persona、
 API key、模型、聲線、資料庫、逐字稿、裝置識別資料與診斷原始內容都不是交接文件或公開
 repo 的一部分。
 
@@ -508,34 +509,67 @@ STT adapter 內固定單一 window 尺寸，避免形狀反覆變動。
 
 ## M6：中央取消與完整管線
 
-### 實作重點
+狀態：public gate 完成並全綠（81 項新測試／447 項完整 pytest）。30 輪暖機端到端 benchmark
+與實體音訊 gate 未執行。
 
-- 建立唯一的 `GenerationCoordinator`：遞增 generation、發 interruption、作廢 STT、依選定
-  provider 誠實執行 cancel／drain、清 TTS／裝置 queue、撤銷未提交工具提案。
-- 組裝固定路徑：
+### 已完成（`src/lune/pipeline/`）
 
-  ```text
-  LocalAudioTransport.input
-    → LuneFinalOnlySTTService（自訂 MLX adapter）
-    → LLMContextAggregator
-    → ContextEnricher
-    → LLMService（由前置 spike 決定；未完成前仍是 OpenAIResponsesLLMService）
-    → SentenceGate
-    → TTSRouterService
-    → LocalAudioTransport.output
-  ```
+| 模組 | 內容 |
+|---|---|
+| `contracts.py` | `CancelEvent`（含 `audible_stop_ms` 與 `failed_stages`）、`TurnStarted`、`UtteranceCaptured`（含 `last_voiced_sample`） |
+| `coordinator.py` | 唯一的 `GenerationCoordinator`：同步推進 fence，再依固定順序拆除；barge-in carry over、其他原因 reset；`device_changed`／`output_overflow` 重建 transport；取消歷史供 gate 取用 |
+| `turn_gate.py` | `VoiceTurnGate`：native window 切片、pre-roll 擷取、bounded utterance 累積、generation 接受集合、輸入不連續時重建時間軸；`pump()` 在產生事件後立即讓出控制權 |
+| `enricher.py` | `ContextEnricher`：把尚未完成的當前 user 訊息接上歷史與摘要，並加上 bounded 檢索；E5 缺失時降級而非讓 turn 失敗 |
+| `pipecat_provider.py` | `PipecatAttemptProvider`：長駐 `PipelineWorker` + 收集器，把 Pipecat frame 轉成 M3 的 typed attempt frame；取消以廣播 `InterruptionFrame` 完成並把排空結果暫存給 `cancel_and_drain` |
+| `playback.py` | `PlaybackSink`：bounded queue、單一 high-water mark 作為 fence、`stop_generation` 清空並 flush、第一個非靜音 frame 打時間戳、寫入失敗計數 |
+| `session.py` | `VoiceSession`：turn 生命週期、STT watchdog、工具提案驗證與兩階段提交、逐句播放確認後才落庫、generation 綁定的狀態機、裝置生命週期 |
+| `benchmark.py` | 端到端與插話 gate 的量測與評分；nearest-rank 百分位；證據不足判定失敗 |
+| `factory.py` | `build_voice_pipeline`：唯一組裝點，並以 `DeferredSTTSink` 解開 STT 與 session 的循環相依 |
 
-- 對 `TurnPolicy` 與 `PreRollBuffer` 明確 reset／generation fence。目前 M1 API 不接收
-  expected generation；不得讓延遲 VAD event 以相同 sample 座標擷取新 generation 音訊。
-- queue 必須 bounded；錯誤與取消路徑都要結束 task、釋放 frame 並保持可重新聆聽。
+### 實作上必須保留的發現
+
+- **插話必須把音訊帶過 fence。** 打斷 Lune 的語音就是下一句話，所以 `carry_over_generation`
+  保留進行中的 utterance，並在重新標記的 PCM 追上前暫時接受被打斷 generation 的殘留資料。
+  若改成一律 reset，使用者的話會被吃掉。
+- **turn gate 必須在產生事件後立刻讓出控制權。** 否則同一次 `feed()` 內較晚的 window 會在
+  呼叫端還沒取消時就被歸進舊 generation。`feed()` 只負責緩衝，`pump()` 逐事件推進。
+- **工具提案要在 `complete_turn` 之前提交。** `turn_matches` 要求 turn 仍是 `pending`，先完成
+  turn 會讓所有提案被判為 cancelled 而靜默丟失。
+- **工作狀態要綁 generation。** 否則被取消的 turn 會讓 session 永遠停在 `speaking`，
+  turn policy 便一直用 300 ms 插話門檻，麥克風等於失效。
+- **provider 的排空不能有兩個讀取者。** 協調器觸發的取消要先等 stream 收尾再排空，
+  而 `ConversationGenerator` 自己呼叫的 `cancel_and_drain` 是在 stream 暫停時發生，可立即排空。
+  兩者共用暫存區，usage 因此只會被記一次。
+- **Pipecat 的 `MetricsFrame` 是 SystemFrame，會越過處理佇列。** usage 可能比
+  `LLMFullResponseStartFrame` 更早抵達收集器，所以 M3 用顯式 attempt 關聯而不是佇列順序是正確的。
+- **`TextFrame.__str__` 會印出 payload。** M3 的 `repr=False` 只保護 `repr()`；
+  `GenerationLLMTextFrame` 已自訂 `__str__`，其他 Lune frame 已確認安全。
 
 ### Gate
 
-- 打斷確認後 200 ms 內停止可聽輸出，之後沒有舊 token、tool call 或 PCM。
-- 30 個暖機 turns：最後 voiced sample → 第一個非靜音 output frame，p50 ≤1.5 s、
-  p95 ≤2.2 s。
-- 覆蓋 STT 卡住、LLM late event、TTS worker crash、queue overflow、裝置切換與重試；未通過
-  release gate 時預設 AVSpeech，不得隱藏失敗。
+已執行（公開、deterministic）：
+
+- fence 在任何拆除前同步推進；拆除順序固定且單一階段失敗不會中斷其餘階段。
+- 插話後 200 ms 內停止可聽輸出（量測值即 `CancelEvent.audible_stop_ms`），之後輸出裝置
+  不再收到舊 generation 的 PCM。
+- 被取消的 turn 不留下逐字稿、assistant 內容、記憶或 affinity。
+- 插話語音帶著 pre-roll 成為下一個 utterance，並以新 generation 送進 STT。
+- STT 卡住、STT 失敗、TTS 失敗、輸出佇列溢位、裝置切換與過期 STT 結果都有覆蓋，
+  且每一種都回到可重新聆聽的狀態。
+
+未執行：
+
+- 30 個暖機 turns 的端到端 p50 ≤1.5 s、p95 ≤2.2 s。需要實體麥克風、已放置的 Whisper 與 E5
+  模型、私人 persona 與 API key。依既有實測拆解，此門檻在目標硬體上無法達成，主因是
+  Whisper 固定 30 秒 mel window，不是 LLM 選擇；因此 release 預設維持 AVSpeech。
+- AVSpeech 是否會在非主執行緒的 run loop 上送出 buffer。M6 已讓 driver 自帶 run loop 執行緒
+  並可由 `RunLoopHost` 抽換，但這一點需要在目標 Mac 上另行授權實測。
+
+### 交給 M7 的缺口
+
+- `lune.engine` 仍未組裝 pipeline；`build_voice_pipeline` 只提供組裝點。
+- 真正的 PyAudio／CoreAudio 輸入 stream owner 與 `AudioOutputDevice` 實作都還沒有。
+- 若實測顯示 AVSpeech 需要主 run loop，App 程序要負責提供，driver 只需換掉 `RunLoopHost`。
 
 ## M7：選單列 App、IPC 與打包
 
@@ -579,10 +613,12 @@ STT adapter 內固定單一 window 尺寸，避免形狀反覆變動。
 ## 建議的下一個聊天室提示
 
 ```text
-先完整閱讀我提供的 PLAN.md，以及 repo 的 docs/handoff-m2-m8.md、
-docs/progress.md、docs/project-decisions.md。以已通過 M5 GitHub Actions 的最新 main 為基準，
-先實作 M6 前置的 Qwen3.5-4B Q4 本地 LLM spike，不組裝 M6 完整 pipeline。目標機是 MacBook
-Air M4／16GB；先使用官方 post-trained 模型，不使用 Roleplay fine-tune。安裝 runtime、下載
-模型、讀取私人 persona 或改變程序架構前先取得授權。保留所有失敗證據，完成文件所列的
-延遲、記憶體、取消與工具呼叫 gate 後，再提出 M6 provider 決策；不得批量刪除任何檔案或目錄。
+先完整閱讀我提供的 PLAN.md，以及 repo 的 docs/handoff-m2-m8.md、docs/progress.md、
+docs/project-decisions.md。以已通過 M6 GitHub Actions 的最新 main 為基準，實作 M7：rumps
+選單列 App、engine 的 authenticated 本機 WebSocket、真正的 PyAudio／CoreAudio 輸入 stream
+owner 與 AudioOutputDevice 實作，以及 py2app 薄打包。lune.engine 目前尚未組裝 pipeline，
+組裝點是 lune.pipeline.build_voice_pipeline。啟用麥克風、耳機、實體裝置、私人模型或私人
+語料驗收前先取得授權；AVSpeech 是否會在非主執行緒的 run loop 上送出 buffer 尚未實測，
+若需要改由 App 主 run loop 提供，先說明理由再改。M6 的 30 輪端到端 benchmark 仍未執行，
+不得描述為已通過，也不得為了通過而放寬門檻。不得批量刪除任何檔案或目錄。
 ```
