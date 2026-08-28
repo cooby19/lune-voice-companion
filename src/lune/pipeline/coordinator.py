@@ -145,7 +145,7 @@ class GenerationCoordinator:
     def _fence_transport(self, reason: CancelReason, generation_id: int) -> None:
         if self._transport is None:
             return
-        if reason in ("device_changed", "output_overflow"):
+        if reason in ("device_changed", "microphone_off", "stream_error", "output_overflow"):
             self._transport.rebuild(generation_id=generation_id)
             return
         self._transport.set_generation(generation_id)

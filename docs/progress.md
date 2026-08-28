@@ -1,6 +1,6 @@
 # 開發進度
 
-更新日期：2026-08-28
+更新日期：2026-08-29
 
 | 里程碑 | 狀態 | Gate 證據 |
 |---|---|---|
@@ -13,7 +13,8 @@
 | M5 | 完成（公開 gate） | 27 項 M5 tests／226 項完整 pytest；typed utterance／PCM 契約、bounded length-prefix protocol、固定 GPT-SoVITS revision、Python 3.10 isolated worker、AVSpeech PCM callback、generation／sequence fence、500 ms cancel、worker crash／sandbox denial、整句 fallback 與 session circuit breaker；[commit `bd59740`](https://github.com/cooby19/lune-voice-companion/commit/bd59740e293e39aa7226ce49fadd4e85163afbbf)；[CI #33073392282](https://github.com/cooby19/lune-voice-companion/actions/runs/33073392282) |
 | M6 前置：本地 LLM spike | 完成（gate 已執行，效能未通過） | 102 項 spike tests／328 項完整 pytest；串流 `<think>` 濾除與違規記錄、pin 未建立即 fail-closed 的模型 manifest、loopback-only endpoint 政策、runtime 候選成本表、由端到端預算推導的首句延遲門檻、RSS／swap／queue 累積偵測、工具呼叫 schema 與每 turn 限額、取消證據與 `remote_cancel` 誠實標示、淨化報告；未安裝 runtime、未下載模型、未讀取私人 persona；[commit `c0a348e`](https://github.com/cooby19/lune-voice-companion/commit/c0a348ee14142b8a292240fa729c8659b09d0941)；[CI #33093928857](https://github.com/cooby19/lune-voice-companion/actions/runs/33093928857) |
 | M6 | 完成（公開 gate）；端到端 benchmark 未執行 | 81 項新測試／447 項完整 pytest；唯一 `GenerationCoordinator`、barge-in carry-over turn gate、Pipecat provider bridge、bounded playback fence、STT watchdog、工具提案兩階段提交與 benchmark gate 邏輯；30 輪暖機端到端 benchmark 與實體音訊 gate 未執行；[commit `de561f8`](https://github.com/cooby19/lune-voice-companion/commit/de561f8b848c64f3b3f11d162cf6c3c5a0ae3466)；[CI #33179142684](https://github.com/cooby19/lune-voice-companion/actions/runs/33179142684)；AVSpeech run loop 修正 [commit `ad353e6`](https://github.com/cooby19/lune-voice-companion/commit/ad353e6)；[CI #33185129924](https://github.com/cooby19/lune-voice-companion/actions/runs/33185129924) |
-| M7 | 待處理 | 選單列 App、authenticated IPC 與打包 |
+| M7 前半：最小實體語音垂直切片 | 完成（公開 gate）；實體 gate 待授權 | 真正的 PyAudio／CoreAudio input owner 與 `AudioOutputDevice`、engine 唯一管線組裝、mic-off／unsafe-output policy、裝置監看與完整關閉；56 項 targeted tests／459 項完整 pytest；未開啟裝置、未讀取私人資料、未載入本機模型、未發出雲端請求 |
+| M7 後半 | 待處理 | rumps、authenticated IPC 與 py2app 打包 |
 | M8 | 待處理 | Keychain、簽署、soak／隱私／release gate |
 
 ## 驗收原則
@@ -125,6 +126,24 @@
   直接 pump 主 run loop，而 release 路徑是 5 ms 間隔的 asyncio pump 加上排程延遲。
 - M6 另修正一個既有隱私缺口：Pipecat 的 `TextFrame.__str__` 會印出 payload，使 M3 的
   `repr=False` 在 log、assertion 與例外訊息中失效。`GenerationLLMTextFrame` 現在自訂 `__str__`。
+- M7 前半的公開 gate 新增真正的 `CoreAudioStreamOwner`，但所有 adapter tests 都注入 fake
+  CoreAudio property reader 與 fake PortAudio host；engine integration 只使用 deterministic
+  VAD／STT、scripted provider、fake TTS 與 recording output。這些測試沒有列舉或開啟實體裝置。
+- 輸入採 PyAudio callback mode，callback 只複製 signed-16-bit PCM 到既有 bounded
+  `LocalAudioTransport`；format／status discontinuity、callback queue overflow 或 stream error
+  會經唯一 `GenerationCoordinator` 作廢 generation 後重建。冷啟動及內建輸出時 input stream
+  維持關閉。
+- 輸出實作既有 `AudioOutputDevice`，明確固定當下的 PortAudio default index，blocking lifecycle
+  與 write 放在單一 executor，不阻塞主 asyncio／CFRunLoop。單次 device write 最多約 20 ms，
+  `flush()` 會先同步設中止旗標，因此大 PCM chunk 不會讓舊輸出無界阻塞取消；實際 200 ms
+  硬體 gate 尚未執行。
+- `lune.engine` 現在只透過既有 `build_voice_pipeline` 組裝 transport → VAD → STT → E5 context →
+  provider → TTS → output，並擁有 input pump、預設裝置監看、stream recovery 與依序 shutdown。
+  AVSpeech 仍由主執行緒上的 `MainRunLoopPump` 驅動，沒有退回 worker-thread run loop。
+- 真實 output write 失敗時，`PlaybackSink.drain()` 現在回傳失敗且拒絕同 generation 後續 PCM，
+  避免把未播放的 assistant 內容誤寫入 SQLite。
+- M7 前半的**實體硬體 gate 尚未執行**：麥克風權限、取樣率／channel mapping、一次完整對話、
+  插話 200 ms、裝置拔除／切換、內建喇叭暫停與退出後無殘留資源，都等待使用者分項授權。
 - 硬體與私人模型報告只在本機產生；除非先完成淨化，否則不進版控。
 - 每個里程碑必須先通過該階段 gate、更新本文件、建立可回退 commit 並 push，才進入下一階段。
 
@@ -140,6 +159,7 @@ AVSpeech 的 run loop 需求已於 2026-08-28 實測完畢並據此修正實作�
 以 Pipecat frame 契約為介面，換成別的 provider 不需要改動 pipeline。等待使用者就 hybrid、
 維持 OpenAI 或改用更小模型做出新的產品決策後，才能固定最終組成。
 
-M7 需要接手的部分：engine 目前仍未組裝 pipeline，`build_voice_pipeline` 只提供組裝點；真正的
-PyAudio／CoreAudio stream owner、`AudioOutputDevice` 實作、rumps UI 與 authenticated IPC 都還
-沒有。
+M7 前半已完成公開可重現的 engine／stream adapter 與唯一管線接線。下一步必須先取得四項獨立
+授權，才可執行無雲端實體 smoke test：麥克風、耳機／實體輸出、本機 Whisper／E5、本地 LLM。
+在該 gate 前不讀取私人設定、模型或裝置內容。rumps、authenticated IPC 與 py2app 仍屬 M7 後半，
+本次沒有提前實作。

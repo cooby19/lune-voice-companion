@@ -62,6 +62,7 @@ class PlaybackSink:
         self._pending: dict[int, int] = {}
         self._idle: dict[int, asyncio.Event] = {}
         self._first_audible: dict[int, float] = {}
+        self._failed_generations: set[int] = set()
         self._dropped_chunks = 0
         self._write_failures = 0
         self._overflowed = False
@@ -97,7 +98,11 @@ class PlaybackSink:
     async def submit(self, chunk: PCMChunk) -> bool:
         """Return False when the chunk is stale or the bounded queue overflowed."""
 
-        if self._closed or self.is_stopped(chunk.generation_id):
+        if (
+            self._closed
+            or self.is_stopped(chunk.generation_id)
+            or chunk.generation_id in self._failed_generations
+        ):
             return False
         if self._writer is None or self._writer.done():
             await self.start()
@@ -134,13 +139,17 @@ class PlaybackSink:
     async def drain(self, generation_id: int) -> bool:
         """Wait until this generation's queued audio reached the device."""
 
-        if self.is_stopped(generation_id) or self._closed:
+        if (
+            self.is_stopped(generation_id)
+            or self._closed
+            or generation_id in self._failed_generations
+        ):
             return False
         while self._pending.get(generation_id, 0) > 0:
             await self._wait_event(generation_id).wait()
             if self.is_stopped(generation_id) or self._closed:
                 return False
-        return True
+        return generation_id not in self._failed_generations
 
     async def close(self) -> None:
         if self._closed:
@@ -173,6 +182,9 @@ class PlaybackSink:
                 raise
             except Exception:
                 self._write_failures += 1
+                self._failed_generations.add(generation_id)
+                if len(self._failed_generations) > _MAX_TRACKED_GENERATIONS:
+                    self._failed_generations.remove(min(self._failed_generations))
                 self._release(generation_id)
                 continue
             if generation_id not in self._first_audible and self._is_audible(chunk):

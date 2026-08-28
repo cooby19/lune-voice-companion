@@ -123,13 +123,13 @@ async def test_a_failing_device_is_counted_and_does_not_stall_playback() -> None
     await sink.start()
 
     await sink.submit(pcm_chunk(1))
-    assert await sink.drain(1) is True
+    assert await sink.drain(1) is False
     assert sink.health().write_failures == 1
     assert device.written == []
 
-    await sink.submit(pcm_chunk(1))
-    assert await sink.drain(1) is True
-    assert sink.health().write_failures == 2
+    assert await sink.submit(pcm_chunk(1)) is False
+    assert await sink.drain(1) is False
+    assert sink.health().write_failures == 1
     await sink.close()
 
 

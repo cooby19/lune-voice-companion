@@ -1,9 +1,9 @@
 # M2–M8 實作規劃與交接
 
-更新日期：2026-08-28
+更新日期：2026-08-29
 
-本文件原為 M1 完成後的公開、淨化版交接，目前已同步到 M6 的公開 gate。下一個聊天室進入
-M7（選單列 App、authenticated IPC 與 py2app 打包）。以下項目尚未執行，不得誤認為已通過：
+本文件原為 M1 完成後的公開、淨化版交接，目前已同步到 M7 前半的公開 gate。下一步是在逐項
+授權後執行無雲端實體 smoke test，再評估 opt-in 本地 provider。以下項目尚未執行，不得誤認為已通過：
 M2 local model／私人語料、M3 私人人格 rubric、M4 真實 E5、M5 私人 GPT 模型／效能 gate、
 M6 的 30 輪端到端 benchmark 與實體音訊 gate。本地 LLM spike 的實機 gate 已完成，結論是本地
 即時路徑在此硬體上不成立；AVSpeech 的 run loop 需求已實測完畢並據此修正實作。
@@ -35,10 +35,11 @@ M6 的 30 輪端到端 benchmark 與實體音訊 gate。本地 LLM spike 的實�
 | M6 commit | `de561f8`（`M6: assemble the pipeline behind one generation fence`），已 push |
 | M6 CI | [GitHub Actions #33179142684](https://github.com/cooby19/lune-voice-companion/actions/runs/33179142684)，已通過 |
 | M6 AVSpeech 修正 | `ad353e6`（`M6: drive AVSpeech from the main run loop, as measured`），[GitHub Actions #33185129924](https://github.com/cooby19/lune-voice-companion/actions/runs/33185129924)，已通過 |
-| 下一階段 | M7 選單列 App、authenticated IPC 與 py2app 打包；M6 的 30 輪端到端 benchmark 仍待授權執行 |
+| M7 前半本機 public gate | 56 項 targeted tests／459 項完整 pytest；CoreAudio／PortAudio adapter 與 engine integration 全部使用 fake／deterministic 依賴，實體 gate 未執行 |
+| 下一階段 | 取得四項獨立授權後執行無雲端實體 smoke test；rumps、authenticated IPC 與 py2app 仍屬 M7 後半 |
 
-目前完成 M0、M0.5、M1、M2、M3、M4、M5、M6 的 public gate 與本地 LLM spike 的完整 gate；
-M6 的 30 輪端到端 benchmark 與實體音訊 gate 尚未執行，M7–M8 尚未實作。本機可能已有私人設定，但私人 persona、
+目前完成 M0、M0.5、M1、M2、M3、M4、M5、M6 與 M7 前半的 public gate，以及本地 LLM spike
+的完整 gate；M6 的 30 輪端到端 benchmark 與實體音訊 gate 尚未執行，M7 後半與 M8 尚未實作。本機可能已有私人設定，但私人 persona、
 API key、模型、聲線、資料庫、逐字稿、裝置識別資料與診斷原始內容都不是交接文件或公開
 repo 的一部分。
 
@@ -113,9 +114,9 @@ Pipecat 1.7.0 的 Silero native window 在 16 kHz 為 512 samples（32 ms），�
 量化門檻，因此 Lune 必須繼續由 `TurnPolicy` 擁有精確 sample 門檻。不要改回 Pipecat 的
 內建 100／300／350 ms timing。
 
-目前 M1 只通過公開 mock／bundled-model self-test。安靜語音、背景音樂／風扇／鍵盤、
-實體預設裝置切換及耳機驗收尚未執行，不得宣稱硬體 gate 已通過。真正的 PyAudio／
-CoreAudio stream owner 仍須在 M6／M7 整合。
+M1 只通過公開 mock／bundled-model self-test。安靜語音、背景音樂／風扇／鍵盤、實體預設裝置
+切換及耳機驗收尚未執行，不得宣稱硬體 gate 已通過。M7 前半已補上真正的 PyAudio／CoreAudio
+stream owner，但尚未開啟實體裝置驗收。
 
 ## 共通實作規則
 
@@ -576,14 +577,23 @@ STT adapter 內固定單一 window 尺寸，避免形狀反覆變動。
 自己的 adapter 量測到的 TTFA 為中文 450／119 ms、英文 280／118 ms、混流 121／118 ms
 （冷／暖），取消在第一個 chunk 後停止。詳見 `progress.md`。）
 
-### 交給 M7 的缺口
+### M7 前半已補上的缺口
 
-- `lune.engine` 仍未組裝 pipeline；`build_voice_pipeline` 只提供組裝點。
-- 真正的 PyAudio／CoreAudio 輸入 stream owner 與 `AudioOutputDevice` 實作都還沒有。
-- AVSpeech 需要主執行緒 run loop 被 drain。engine 目前由 `MainRunLoopPump` 自己處理；若 App
-  程序本身已在轉主 run loop，改注入別的 `RunLoopHost` 即可，不要退回 worker thread 版本。
+- `lune.engine` 現在只透過 `build_voice_pipeline` 組裝 production path，並擁有 input pump、
+  default-device polling、stream recovery 與 shutdown lifecycle。
+- `CoreAudioStreamOwner` 已實作 PyAudio callback input 與既有 `AudioOutputDevice`；冷啟動不開
+  input、輸出 lazy open、內建輸出暫停。blocking calls 位於單一 executor，output write 切成最多
+  約 20 ms，`flush()` 可先立起中止旗標。
+- output write 失敗不再被 `PlaybackSink.drain()` 當作成功，因此未播放 assistant 文字不會落庫。
+- AVSpeech 仍由 engine 主執行緒的 `MainRunLoopPump` drain；沒有退回已知拿不到 buffer 的
+  worker-thread run loop。若未來 App 主 run loop 自行提供 host，仍可注入別的 `RunLoopHost`。
+- 公開 gate 未列舉或開啟實體裝置，也未讀取私人設定、模型或 key；麥克風／耳機／模型與本地
+  LLM gate 仍須分別取得授權。
 
 ## M7：選單列 App、IPC 與打包
+
+狀態：前半的最小實體語音垂直切片已完成 public gate；以下 UI／IPC／打包仍待處理。本次沒有
+為了垂直切片提前實作。
 
 ### 實作重點
 
@@ -626,11 +636,10 @@ STT adapter 內固定單一 window 尺寸，避免形狀反覆變動。
 
 ```text
 先完整閱讀我提供的 PLAN.md，以及 repo 的 docs/handoff-m2-m8.md、docs/progress.md、
-docs/project-decisions.md。以已通過 M6 GitHub Actions 的最新 main 為基準，實作 M7：rumps
-選單列 App、engine 的 authenticated 本機 WebSocket、真正的 PyAudio／CoreAudio 輸入 stream
-owner 與 AudioOutputDevice 實作，以及 py2app 薄打包。lune.engine 目前尚未組裝 pipeline，
-組裝點是 lune.pipeline.build_voice_pipeline。啟用麥克風、耳機、實體裝置、私人模型或私人
-語料驗收前先取得授權；AVSpeech 是否會在非主執行緒的 run loop 上送出 buffer 尚未實測，
-若需要改由 App 主 run loop 提供，先說明理由再改。M6 的 30 輪端到端 benchmark 仍未執行，
-不得描述為已通過，也不得為了通過而放寬門檻。不得批量刪除任何檔案或目錄。
+docs/project-decisions.md。M7 前半的 CoreAudio／PyAudio stream owner、AudioOutputDevice 與
+engine 唯一管線組裝已完成 public gate，但實體 gate 未執行。先向使用者分別取得麥克風、
+耳機／實體輸出、本機 Whisper／E5 與本地 LLM 授權；取得前不得讀取私人設定、模型或裝置內容。
+第二階段先用 scripted provider 跑無雲端實體 smoke test，保留 200 ms 與 p50／p95 原門檻；
+第三階段再檢查既有 Qwen runtime／模型是否存在並評估 opt-in provider，不得改 release 預設或
+架構。rumps、authenticated IPC 與 py2app 是 M7 後半，不要混入硬體驗收。不得批量刪除檔案。
 ```

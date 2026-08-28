@@ -153,6 +153,31 @@
   預設由 32 提高到 512（約十秒、約 0.5 MB）。背壓在此不可行：callback 是原生 push，
   阻塞主執行緒會拖垮整個程序，所以超出上限仍以失敗收場，而不是無界成長。
 
+## M7 前半：最小實體語音垂直切片（2026-08-29）
+
+- `lune.engine` 必須且只可呼叫既有 `build_voice_pipeline` 完成組裝；不得為硬體 smoke test
+  另接一條簡化管線。production composition 固定使用本機 Silero、pinned MLX Whisper、E5
+  context、OpenAI Responses provider contract、AVSpeech router 與同一個 playback fence。
+- `CoreAudioStreamOwner` 同時擁有 PyAudio input stream 與實作既有 `AudioOutputDevice`。建立
+  Python object 本身不初始化 PortAudio、不查裝置也不開 stream；實際 engine start 才以
+  CoreAudio default device ID／transport type 和 PortAudio default index 建立記憶體內 snapshot。
+- 冷啟動 input stream 關閉；只有明確要求 microphone 且 output 不是內建裝置時才打開。輸出
+  stream 在第一個 PCM chunk 才 lazy open。CoreAudio default query 在前後 ID 不一致時拒絕該次
+  snapshot，避免把切換中的 CoreAudio ID 與 PortAudio index 錯配。
+- PyAudio input 使用 callback mode；callback 只驗證 int16 mono frame、複製進 bounded
+  `LocalAudioTransport` 並立即回傳。callback overflow、status discontinuity、input／output
+  stream error 都必須先由唯一 `GenerationCoordinator` 推進 fence，再重建 stream。
+- PyAudio output 的 open／write／stop／close 都在單一 executor 序列化，避免 blocking call 阻塞
+  engine 主執行緒上的 asyncio 與 AVSpeech `MainRunLoopPump`。每次實際 write 最多約 20 ms；
+  `flush()` 在排入 executor 前先同步設中止旗標，使大 PCM chunk 也能在當前短區塊後停止。
+- `PlaybackSink` 遇到 device write error 後，該 generation 的 `drain()` 必須回傳 false 並拒絕
+  後續 chunk。未成功送達 output device 的 assistant 文字不得被當作已播放而落庫。
+- 預設裝置以 bounded polling 監看。變更仍走既有 `DeviceStateMachine`：先取消 generation，
+  再重建，內建輸出保持 `paused_unsafe_output`；裝置 UID 與名稱只留在記憶體，不進診斷。
+- 公開 gate 只能注入 fake CoreAudio／PortAudio、deterministic VAD／STT、scripted provider、
+  fake TTS 與 recording output。這些證據不代表麥克風權限、channel mapping、200 ms 插話、
+  實體裝置切換或無殘留資源 gate 已通過；所有實體測試仍須另行逐項授權。
+
 ## 私人資料
 
 - 私人資料根目錄：`~/Library/Application Support/Lune/`。

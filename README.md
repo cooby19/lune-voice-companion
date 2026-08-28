@@ -214,6 +214,20 @@ LocalAudioTransport.input → VoiceTurnGate → LuneFinalOnlySTTService
 不是產生錯位的音訊。工作狀態（`thinking`、`speaking`）綁定其 generation，取消後自動回到可
 聆聽狀態，不會卡住麥克風。
 
+M7 前半加入真正的 `CoreAudioStreamOwner`。PyAudio input callback 只把 signed-16-bit PCM 複製到
+既有 bounded transport；CoreAudio／PortAudio 的查詢、開關 stream 與 blocking output write 由
+單一 lifecycle owner 管理。輸出 write 會切成最多約 20 ms 的區塊，讓 `flush()` 可在當前短區塊
+後停止，而不必等完整大 chunk 播完。冷啟動不開 input stream，內建輸出維持
+`paused_unsafe_output`，裝置切換仍先經中央 generation cancellation 才重建。
+
+`lune.engine` 只呼叫 `build_voice_pipeline` 組裝上述唯一管線，並管理 input pump、預設裝置監看、
+stream recovery 與關閉順序。AVSpeech 仍在 engine 主執行緒的 asyncio／CFRunLoop 上運作；沒有把
+run loop 移到已知收不到 callback 的 worker thread。
+
+上述 adapter 與 engine 目前只通過 fake CoreAudio／PortAudio、deterministic VAD／STT、scripted
+provider、fake TTS 及 recording output 的公開 gate。**實體麥克風、耳機、裝置切換與 200 ms
+插話 gate 尚未執行**，不得把公開測試視為硬體證據。
+
 取消後不得播放的內容也不會落庫：使用者逐字稿在 final 接受後保存，assistant 內容只保存確實
 送到輸出裝置的句子，記憶與 affinity 提案只在該 generation 仍有效時提交。
 

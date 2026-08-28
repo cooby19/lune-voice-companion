@@ -98,6 +98,11 @@ class LocalAudioTransport:
             dropped_callbacks=dropped_callbacks,
         )
 
+    def mark_discontinuity(self) -> None:
+        """Flag a PortAudio status/format discontinuity for lifecycle recovery."""
+
+        self._overflowed.set()
+
     def rebuild(self, *, generation_id: int) -> None:
         """Reset a corrupt stream after the generation coordinator has cancelled it."""
 

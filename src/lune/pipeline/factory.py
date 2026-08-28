@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
+from lune.audio.devices import DeviceSnapshot, MaybeAwaitable
 from lune.audio.preroll import PreRollBuffer
 from lune.audio.transport import LocalAudioTransport
 from lune.audio.vad import TurnPolicy, TurnPolicyConfig
@@ -70,6 +71,7 @@ def build_voice_pipeline(
     output_device: AudioOutputDevice,
     provider_fences: Sequence[ProviderFence] = (),
     summarizer: RollingSummaryManager | None = None,
+    rebuild_streams: Callable[[DeviceSnapshot], MaybeAwaitable] | None = None,
     transport: LocalAudioTransport | None = None,
     audio: AudioConfig | None = None,
     diagnostics: SafeDiagnostics | None = None,
@@ -127,6 +129,7 @@ def build_voice_pipeline(
         playback=playback,
         proposals=proposals,
         summarizer=summarizer,
+        rebuild_streams=rebuild_streams,
         max_output_tokens=max_output_tokens,
         stt_timeout_s=stt_timeout_s,
         diagnostics=diagnostics,
