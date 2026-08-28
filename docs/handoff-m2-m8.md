@@ -34,6 +34,7 @@ M6 的 30 輪端到端 benchmark 與實體音訊 gate。本地 LLM spike 的實�
 | M6 本機 gate | 81 項新測試／447 項完整 pytest；中央取消、turn gate fence、Pipecat provider bridge、bounded playback、錯誤與取消恢復，已通過 |
 | M6 commit | `de561f8`（`M6: assemble the pipeline behind one generation fence`），已 push |
 | M6 CI | [GitHub Actions #33179142684](https://github.com/cooby19/lune-voice-companion/actions/runs/33179142684)，已通過 |
+| M6 AVSpeech 修正 | `ad353e6`（`M6: drive AVSpeech from the main run loop, as measured`），[GitHub Actions #33185129924](https://github.com/cooby19/lune-voice-companion/actions/runs/33185129924)，已通過 |
 | 下一階段 | M7 選單列 App、authenticated IPC 與 py2app 打包；M6 的 30 輪端到端 benchmark 仍待授權執行 |
 
 目前完成 M0、M0.5、M1、M2、M3、M4、M5、M6 的 public gate 與本地 LLM spike 的完整 gate；
