@@ -37,12 +37,17 @@ M6 的 30 輪端到端 benchmark 與實體音訊 gate。本地 LLM spike 的實�
 | M6 AVSpeech 修正 | `ad353e6`（`M6: drive AVSpeech from the main run loop, as measured`），[GitHub Actions #33185129924](https://github.com/cooby19/lune-voice-companion/actions/runs/33185129924)，已通過 |
 | M7 前半本機 public gate | 56 項 targeted tests／459 項完整 pytest；CoreAudio／PortAudio adapter 與 engine integration 全部使用 fake／deterministic 依賴，實體 gate 未執行 |
 | M7 第二階段實體 smoke | 2026-08-29 已授權執行：一次完整實體 turn 完成，端到端 2,664.7 ms（門檻 p50 ≤1.5 s 未通過）；插話 200 ms 與裝置切換未執行；期間修正五項缺陷；486 項完整 pytest |
-| 下一階段 | 執行插話 200 ms 與裝置切換／拔除實體 gate，再視情況做 30 輪 benchmark；rumps、authenticated IPC 與 py2app 仍屬 M7 後半 |
+| M7 第三階段本機 provider | 19 項新測試；`local_qwen` 進入 release registry 並成為測試階段預設，未載入權重、未發出雲端請求 |
+| M7 後半桌面殼與 IPC | 519 項完整 pytest；loopback WebSocket IPC、`lune-engine --ui-ipc` host、`UiRuntime` 契約與 pywebview 殼全部以 fake engine 與 loopback socket 驗證，實機視窗未開過 |
+| M7 後半 commit | `c6226fe`（`M7: land the desktop shell over authenticated loopback IPC`），尚未 push |
+| 下一階段 | 執行插話 200 ms 與裝置切換／拔除實體 gate、桌面殼的實機開窗與子行程回收驗證，再視情況做 30 輪 benchmark；rumps 已依 `docs/ui-spec.md` 放棄，authenticated IPC 已實作，只剩 py2app 實際打包與簽署，該項與 Keychain、soak 一起留在 M8 |
 
-目前完成 M0、M0.5、M1、M2、M3、M4、M5、M6 與 M7 前半的 public gate，以及本地 LLM spike
-的完整 gate；M6 的 30 輪端到端 benchmark 與實體音訊 gate 尚未執行，M7 後半與 M8 尚未實作。本機可能已有私人設定，但私人 persona、
-API key、模型、聲線、資料庫、逐字稿、裝置識別資料與診斷原始內容都不是交接文件或公開
-repo 的一部分。
+目前完成 M0、M0.5、M1、M2、M3、M4、M5、M6 與 M7（前半、第三階段、後半）的 public gate，
+以及本地 LLM spike 的完整 gate；M6 的 30 輪端到端 benchmark 與實體音訊 gate 尚未執行，
+M7 第二階段的實體 smoke 只部分執行。M7 後半的 authenticated IPC 與 pywebview 桌面殼雖已
+實作，實機開窗與子行程回收仍未驗證；py2app 只更新了設定，實際打包與簽署連同 Keychain、
+soak 一起留在尚未實作的 M8。本機可能已有私人設定，但私人 persona、API key、模型、聲線、
+資料庫、逐字稿、裝置識別資料與診斷原始內容都不是交接文件或公開 repo 的一部分。
 
 ## 新聊天室的第一輪操作
 
@@ -620,10 +625,12 @@ STT adapter 內固定單一 window 尺寸，避免形狀反覆變動。
 - **延遲數字必須連同電源模式與負載引用。** 低電量模式使同一份語料從 1,826–1,889 ms 變成
   6,676–7,290 ms。
 
-## M7：選單列 App、IPC 與打包
+## M7：桌面 App、IPC 與打包
 
-狀態：前半的最小實體語音垂直切片已完成 public gate，第二階段的實體 smoke 已部分執行；
-以下 UI／IPC／打包仍待處理。
+狀態：前半的最小實體語音垂直切片已完成 public gate，第二階段的實體 smoke 已部分執行，
+第三階段的本機 provider 與後半的 UI／IPC 已於 `c6226fe` 完成 public gate；只剩 py2app
+實際打包與各項實機 gate 待處理。**產品形態已由選單列改為視窗應用程式**，本節保留為
+原始需求，實際介面規格以 `docs/ui-spec.md` 為準。
 
 UI 出現前，`lune-engine --microphone` 是唯一能開始對話的方式（冷啟動 mic-off 政策不變），
 `--ephemeral-memory` 可讓 shakedown 對話不寫入真實資料庫。這兩個旗標不取代 M7 後半的
@@ -631,14 +638,19 @@ UI 出現前，`lune-engine --microphone` 是唯一能開始對話的方式（�
 
 ### 實作重點
 
-- rumps UI 與 `lune-engine` 分離；engine 綁 `127.0.0.1:0`，以一次性 JSON handshake 回傳
-  port、protocol version 與隨機 token，後續只接受 authenticated WebSocket。
+- UI 與 `lune-engine` 分離；engine 綁 `127.0.0.1:0`，以一次性 JSON handshake 回傳
+  port、protocol version 與隨機 token，後續只接受 authenticated WebSocket。**已實作**於
+  `src/lune/ipc/`；UI 端不是 rumps 而是 `src/lune/ui/desktop.py` 的 pywebview 視窗，
+  engine 端入口為 `lune-engine --ui-ipc`。
 - 命令：`set_microphone`、`get_status`、`shutdown`；事件：`state_changed`、
-  `device_changed`、`budget_changed`、`error`。
+  `device_changed`、`budget_changed`、`error`。這仍是基準集合（`COMMAND_NAMES`／
+  `EVENT_NAMES`）；視窗 UI 另有 `UI_COMMAND_NAMES`／`UI_EVENT_NAMES` 超集合，涵蓋多
+  thread、文字輸入、記憶與人格設定，定義在 `src/lune/ipc/contracts.py`。
 - 冷啟動 mic off；內建喇叭保持 `paused_unsafe_output`；預設裝置 UID 只留在記憶體，不能
   寫入公開 log。
 - Quit 先 graceful shutdown；逾時只處理 handshake 驗證過的 engine／worker PID。
-- py2app 薄打包，不把 Whisper、E5、GPT runtime 或私人聲線放進 `.app`。
+- py2app 薄打包，不把 Whisper、E5、GPT runtime 或私人聲線放進 `.app`。**設定已更新**
+  （`LSUIElement` 改為 `False`、打包 `lune` 與 `webview`），但實際打包與簽署未執行。
 - 在 app metadata 加入 `NSMicrophoneUsageDescription`，並驗證首次權限提示；不要等到 M8
   才補，否則 M7 的 Finder 啟動 gate 無法成立。
 
@@ -676,6 +688,8 @@ docs/project-decisions.md、docs/ui-spec.md。M7 第二階段的實體 smoke 已
 授權，需要真實對話時另外取得私人 config／persona 的讀取授權；取得前不得讀取私人設定、模型
 或裝置內容。跑實體情境時務必先確認低電量模式已關閉並記錄當時負載，否則延遲數字不可比。
 用 scripts/run_physical_voice_smoke.py 的 barge-in 與 device-switch 補完 M7 第二階段，
-保留 200 ms 與 p50／p95 原門檻，不得為了通過而放寬。rumps、authenticated IPC 與 py2app 是
-M7 後半，不要混入硬體驗收。不得批量刪除檔案。
+保留 200 ms 與 p50／p95 原門檻，不得為了通過而放寬。M7 後半的 authenticated IPC 與 pywebview
+桌面殼已於 `c6226fe` 實作完成（rumps 依 ui-spec 放棄），但只通過 public gate：實機開窗、殼與
+引擎的啟動關閉時序、視窗關閉後子行程是否確實回收都還沒驗證過，要另外授權才做，也不要混入
+音訊硬體驗收。py2app 只更新了設定，實際打包與簽署屬 M8。不得批量刪除檔案。
 ```
