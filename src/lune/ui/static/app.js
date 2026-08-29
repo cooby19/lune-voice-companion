@@ -476,6 +476,9 @@
       local_models: "models",
       microphone: "audio",
     };
+    if (raw === "repair") {
+      return raw;
+    }
     return aliases[raw] || (setupSteps.some((step) => step.id === raw) ? raw : "");
   }
 
@@ -1530,7 +1533,9 @@
       return "repair";
     }
     const explicit = stringValue(setup.currentStep);
-    if (setupSteps.some((step) => step.id === explicit)) {
+    // "repair" is a blocking card rather than one of the numbered steps, so it
+    // is honoured here as well as derived from the reasons above.
+    if (explicit === "repair" || setupSteps.some((step) => step.id === explicit)) {
       return explicit;
     }
     return setupSteps.find((step) => !isSetupStepComplete(step.id, setup))?.id || "voice";

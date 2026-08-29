@@ -209,3 +209,64 @@ async def test_forget_memory_requires_exact_ui_confirmation(tmp_path: Path) -> N
         assert engine.store.list_memories() == ()
     finally:
         await runtime.close()
+
+
+async def _setup_runtime(tmp_path: Path, *reasons: str) -> UiRuntime:
+    """A runtime stopped at setup, so no engine and no private data are needed."""
+
+    paths = LunePaths(support=tmp_path / "support", logs=tmp_path / "logs")
+
+    async def build() -> FakeEngine:
+        raise AssertionError("setup must not start the engine")
+
+    def blocked(_paths: LunePaths) -> Readiness:
+        return Readiness("setup_required", reasons)
+
+    runtime = UiRuntime(paths, build, readiness_checker=blocked)
+    await runtime.start()
+    return runtime
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["config_missing", "config_invalid"])
+async def test_a_config_reason_opens_a_repair_step_it_can_act_on(
+    tmp_path: Path, reason: str
+) -> None:
+    runtime = await _setup_runtime(tmp_path, reason)
+    try:
+        setup = runtime.snapshot()["setup"]
+        assert setup is not None
+        # Without a step of its own the only reason left would match nothing and
+        # `current_step` would fall through to the unrelated audio card.
+        assert setup["current_step"] == "repair"
+        repair = setup["steps"][0]
+        assert repair["id"] == "repair"
+        assert repair["status"] == "required"
+        assert repair["complete"] is False
+        assert reason in setup["reasons"]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_a_config_reason_outranks_the_numbered_steps(tmp_path: Path) -> None:
+    runtime = await _setup_runtime(tmp_path, "persona_missing", "config_invalid")
+    try:
+        setup = runtime.snapshot()["setup"]
+        assert setup is not None
+        assert setup["current_step"] == "repair"
+        assert str(setup["steps"][0]["id"]) == "repair"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_a_readable_config_leaves_the_numbered_steps_alone(tmp_path: Path) -> None:
+    runtime = await _setup_runtime(tmp_path, "persona_unconfigured")
+    try:
+        setup = runtime.snapshot()["setup"]
+        assert setup is not None
+        assert setup["current_step"] == "persona"
+        assert all(str(step["id"]) != "repair" for step in setup["steps"])
+    finally:
+        await runtime.close()

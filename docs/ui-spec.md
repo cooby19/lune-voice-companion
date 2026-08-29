@@ -157,6 +157,10 @@ rumps 換成 Web 殼。
 
 - **`config_missing` 應自我修復。** `config.toml` 內容全為有預設值的項目（匯率、預算門檻），
   第一次啟動應直接寫入一份預設檔，不得成為使用者面前的關卡。
+- **`config_invalid` 不得自我修復，但也不得靜默。** 覆寫一份使用者改過、卻無法驗證的設定會弄丟
+  他的資料，所以只能停下來。停下來的同時必須看得見：這兩個 config reason 都會排在五步之前，
+  成為一張獨立的修復卡（`current_step` 為 `repair`），文案先卸責、附一顆「再檢查一次」。
+  自我修復失敗（例如目錄不可寫）而殘留的 `config_missing` 走同一張卡。
 - **`keychain_unavailable` 不是待辦事項，是系統故障。** 使用者沒有「忘了做」任何事，
   必須與其他待辦分開呈現，文案第一句先卸責。它只在雲端組成下出現。
 
@@ -259,7 +263,7 @@ downloader，所以介面只能指出缺什麼、指向哪個目錄，不能代�
 | `degraded_tts` 不可達 | sticky 屬性不進 `_idle_state()` | `src/lune/pipeline/session.py:283` |
 | 文字輸入入口 | 只有 `handle_audio()`，需加 `submit_text()` | `src/lune/pipeline/session.py:227` |
 | 文字訊息落庫條件 | 綁音訊播放確認，靜音時無事件 | `src/lune/memory/store.py:195` |
-| `config_missing` 自我修復 | 目前直接變成 `setup_required` | `src/lune/config.py:132` |
+| `config_missing` 自我修復 | **已接**：第一次啟動寫入預設檔；`config_invalid` 另走修復卡 | `src/lune/readiness.py:40`、`src/lune/ui/runtime.py:431` |
 | 本機 LLM provider | **已接**：registry、pipeline 與 release 預設皆已切換；實體 gate 未跑 | `src/lune/llm/local_qwen.py` |
 | 本機組成的第一次啟動 | 步驟 1' 與兩個新 reason code 尚無介面 | `src/lune/readiness.py:46` |
 | authenticated WebSocket IPC | 只有文件，零程式碼 | `docs/handoff-m2-m8.md:600` |

@@ -36,6 +36,11 @@ _THREAD_LIMIT = 40
 _DISPLAY_TEXT_BYTES = 512
 _PROFILE_TEXT_BYTES = 2_000
 _TITLE_TEXT_BYTES = 160
+# `check_readiness()` writes the all-default file on first run, so a config
+# reason that survives it means the file is unreadable or could not be
+# created.  Neither may be silently overwritten, so both need a repair step
+# rather than one of the numbered onboarding tasks.
+_CONFIG_REASONS = frozenset({"config_missing", "config_invalid"})
 _PROACTIVITY_LEVELS = frozenset({"安靜", "剛好", "主動"})
 _VOICE_CHOICES = frozenset({"system", "private"})
 _RESPONSE_LENGTHS = frozenset({"short", "normal"})
@@ -423,16 +428,23 @@ class UiRuntime:
                 "status": "optional",
             },
         ]
+        if reasons & _CONFIG_REASONS:
+            # Ahead of the numbered steps on purpose: nothing the user can fill
+            # in matters while the configuration the app reads is unusable.
+            steps.insert(
+                0,
+                {
+                    "id": "repair",
+                    "title": "先修好本機設定",
+                    "detail": "Lune 不會覆寫一份讀不到或無法驗證的設定；確認之後再檢查一次。",
+                    "status": "required",
+                },
+            )
         current = next(
             (
-                {
-                    "local_runtime": "local",
-                    "local_models": "models",
-                    "persona": "persona",
-                }[str(step["id"])]
+                _SETUP_STEP_VIEWS[str(step["id"])]
                 for step in steps
-                if step["status"] == "required"
-                and str(step["id"]) in {"local_runtime", "local_models", "persona"}
+                if step["status"] == "required" and str(step["id"]) in _SETUP_STEP_VIEWS
             ),
             "audio",
         )
@@ -802,6 +814,17 @@ def _display_text(value: str, *, maximum_bytes: int = _DISPLAY_TEXT_BYTES) -> st
 
 def _response_length(bounds: SentenceBounds) -> str:
     return "short" if bounds.max <= 2 else "normal"
+
+
+# Steps the user can act on, keyed by the id the onboarding screen renders.
+# A required step missing from this map would leave `current_step` falling
+# through to an unrelated card, so anything blocking must appear here.
+_SETUP_STEP_VIEWS = {
+    "repair": "repair",
+    "local_runtime": "local",
+    "local_models": "models",
+    "persona": "persona",
+}
 
 
 def _step_status(reasons: set[str], relevant: set[str]) -> str:
