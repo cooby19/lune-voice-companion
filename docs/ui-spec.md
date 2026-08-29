@@ -40,6 +40,24 @@
 IPC 仍照 `docs/handoff-m2-m8.md:600` 的 authenticated WebSocket 設計，只是連線的一端從
 rumps 換成 Web 殼。
 
+### 兩條通道：增量事件為主，整包 snapshot 為對帳
+
+一則訊息落庫不該讓每一條 thread 的私密文字重新過一次線。因此已認證連線上有兩條通道：
+
+| 事件 | 何時送 | payload |
+|---|---|---|
+| `message_added` | `complete_turn()`（此時訊息才讀得到） | `{"message": {...}}`，單則，含 `thread_id` |
+| `thread_updated` | 新建、改名、自動標題、turn 完成後 `updated_at` 變動 | `{"thread": {...}}`，單條 |
+| `memory_updated` | `add_memory()` 成功或 `forget_memory()` 真的刪掉 | `{"memories": [...]}`，整份但有上限 |
+
+每個 payload 用的是 snapshot 裡同一份 per-item view（`_thread_view`／`_message_view`／
+`_memory_view`），所以兩條通道的欄位命名不可能各走各的。
+
+`snapshot` 退為低頻對帳（預設 2 秒一次，且只在內容真的改變時才送），負責事件表達不了的
+狀態：`app.state`、裝置、setup、persona、通話計時。送出事件同時推進對帳基準，因此一輪對話
+不會再被整包重送一次。事件佇列滿了就丟事件而不是擋住引擎的寫入，被丟掉的那一刻會清掉基準，
+下一次 tick 必定送出完整 snapshot——代價是延遲，不是正確性。
+
 ## 已定案的決策
 
 - 視覺調性全程帶角色溫度：暖色深底，非中性灰階。
@@ -266,8 +284,9 @@ downloader，所以介面只能指出缺什麼、指向哪個目錄，不能代�
 | `config_missing` 自我修復 | **已接**：第一次啟動寫入預設檔；`config_invalid` 另走修復卡 | `src/lune/readiness.py:40`、`src/lune/ui/runtime.py:431` |
 | 本機 LLM provider | **已接**：registry、pipeline 與 release 預設皆已切換；實體 gate 未跑 | `src/lune/llm/local_qwen.py` |
 | 本機組成的第一次啟動 | 步驟 1' 與兩個新 reason code 尚無介面 | `src/lune/readiness.py:46` |
-| authenticated WebSocket IPC | 只有文件，零程式碼 | `docs/handoff-m2-m8.md:600` |
-| `get_status`、`budget_changed` | 名稱未進程式碼 | — |
+| authenticated WebSocket IPC | **已接**：一次性 token 與單一 client；`message_added`／`thread_updated`／`memory_updated` 已有發送端，snapshot 退為對帳 | `src/lune/ipc/server.py`、`src/lune/engine.py:717` |
+| `get_status` | **已接** | `src/lune/ui/runtime.py:211` |
+| `budget_changed` | 名稱在 `EVENT_NAMES` 內，但沒有發送端，`app.js` 也沒有對應分支 | `src/lune/ipc/contracts.py:58` |
 | Web 殼 | 技術棧已定，選型未定 | `setup.py` |
 | `LSUIElement` | 仍為 `True`，須改 `False` | `setup.py:15` |
 | 應用程式圖示 | `iconfile` 為 `None`，repo 無任何圖形資產 | `setup.py:11` |

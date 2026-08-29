@@ -23,7 +23,13 @@ from lune.config import (
 )
 from lune.ipc.contracts import JSONValue
 from lune.memory.embedding import E5MemoryRetriever, E5SetupRequired, LocalE5Encoder
-from lune.memory.store import MemoryStore
+from lune.memory.store import (
+    ConversationThread,
+    MemoryStore,
+    StoreChange,
+    StoredMemory,
+    StoredMessage,
+)
 from lune.paths import LunePaths
 from lune.readiness import Readiness, check_readiness
 
@@ -92,6 +98,10 @@ class EngineControl(Protocol):
 
 type EngineFactory = Callable[[], Awaitable[EngineControl]]
 type ReadinessChecker = Callable[[LunePaths], Readiness]
+# An incremental UI event and its already-bounded payload.  A sink is called
+# from the task that committed the change, so it must hand the frame off
+# without blocking and without raising back into the store.
+type UiEventSink = Callable[[str, dict[str, JSONValue]], None]
 
 _DEFAULT_IDENTITY_NAME = "Lune"
 _DEFAULT_PRESENTATION = "一位在這台 Mac 上陪你對話的語音夥伴"
@@ -111,6 +121,7 @@ class UiRuntime:
     engine_factory: EngineFactory
     monotonic: Callable[[], float] = time.monotonic
     readiness_checker: ReadinessChecker = check_readiness
+    event_sink: UiEventSink | None = None
     _engine: EngineControl | None = field(init=False, default=None, repr=False)
     _readiness: Readiness | None = field(init=False, default=None, repr=False)
     _active_thread_id: str | None = field(init=False, default=None)
@@ -158,8 +169,13 @@ class UiRuntime:
         self._engine = None
         self._call_thread_id = None
         self._call_started_at = None
-        if engine is not None:
-            await engine.close()
+        if engine is None:
+            return
+        # Detach first: a listener firing against a closing store would read
+        # rows this runtime is no longer able to broadcast.
+        if engine.store is not None:
+            engine.store.set_change_listener(None)
+        await engine.close()
 
     async def refresh_setup(self) -> None:
         """Refresh opaque readiness and start the engine only when it is safe."""
@@ -184,6 +200,9 @@ class UiRuntime:
         self._engine = engine
         self._active_thread_id = engine.session_id
         self._fault = None
+        # The engine writes conversation and memory rows on its own tasks, so
+        # the store is the only place that sees every UI-visible change.
+        store.set_change_listener(self._on_store_change)
         self._load_local_preferences()
 
     async def handle(self, command: str, params: Mapping[str, JSONValue]) -> JSONValue:
@@ -303,15 +322,7 @@ class UiRuntime:
                 "degraded_tts": bool(engine is not None and engine.degraded_tts),
                 "fault": self._fault,
             },
-            "threads": [
-                {
-                    "id": thread.id,
-                    "title": _display_text(thread.title, maximum_bytes=_TITLE_TEXT_BYTES),
-                    "title_source": thread.title_source,
-                    "updated_at": thread.updated_at,
-                }
-                for thread in threads
-            ],
+            "threads": [_thread_view(thread) for thread in threads],
             "active_thread_id": active_thread,
             "call": {
                 "active": call_active,
@@ -321,27 +332,8 @@ class UiRuntime:
                 "speak_text": self._speak_text,
             },
             "device": self._device_view(engine),
-            "messages": [
-                {
-                    "id": message.id,
-                    "thread_id": message.thread_id,
-                    "turn_id": message.turn_id,
-                    "role": message.role,
-                    "content": _display_text(message.content),
-                    "created_at": message.created_at,
-                }
-                for message in messages[-_MESSAGE_LIMIT:]
-            ],
-            "memories": [
-                {
-                    "id": memory.id,
-                    "content": _display_text(memory.content),
-                    "source": memory.source,
-                    "importance": memory.importance,
-                    "created_at": memory.created_at,
-                }
-                for memory in memories[:_MEMORY_LIMIT]
-            ],
+            "messages": [_message_view(message) for message in messages[-_MESSAGE_LIMIT:]],
+            "memories": [_memory_view(memory) for memory in memories[:_MEMORY_LIMIT]],
             "profile": {
                 "name": _display_text(self._profile.name, maximum_bytes=_TITLE_TEXT_BYTES),
                 "context": _display_text(self._profile.context, maximum_bytes=_PROFILE_TEXT_BYTES),
@@ -523,6 +515,59 @@ class UiRuntime:
             self._persona = PersonaKernel.load(self.paths.persona)
         except (FileNotFoundError, OSError, ValueError, ValidationError):
             self._persona = None
+
+    def _on_store_change(self, change: StoreChange) -> None:
+        """Publish the incremental events for one committed store change.
+
+        This runs on whichever task performed the write, so it reads back only
+        the rows the change names and hands the frames to a sink that must not
+        block.  Anything an event cannot express stays the snapshot's job.
+        """
+
+        sink = self.event_sink
+        if sink is None:
+            return
+        for event, payload in self._change_events(change):
+            sink(event, payload)
+
+    def _change_events(self, change: StoreChange) -> list[tuple[str, dict[str, JSONValue]]]:
+        """Build the bounded event payloads for one change, or none at all.
+
+        Every payload reuses the same per-item view the snapshot renders, so
+        the incremental channel cannot drift from the reconciling one.
+        """
+
+        engine = self._engine
+        store = None if engine is None else engine.store
+        if store is None:
+            return []
+        if change.kind == "memories":
+            # The bounded list is what the memory view renders wholesale, and it
+            # is far smaller than a snapshot, so a delete needs no separate event.
+            return [
+                (
+                    "memory_updated",
+                    {
+                        "memories": [
+                            _memory_view(memory) for memory in store.list_memories()[:_MEMORY_LIMIT]
+                        ]
+                    },
+                )
+            ]
+        if change.thread_id is None:
+            return []
+        if change.kind == "thread":
+            thread = store.get_conversation_thread(change.thread_id)
+            return [] if thread is None else [("thread_updated", {"thread": _thread_view(thread)})]
+        if change.turn_id is None:
+            return []
+        # One completed turn contributes a final user and assistant message at
+        # most, so this stays bounded without a cap of its own.
+        return [
+            ("message_added", {"message": _message_view(message)})
+            for message in store.conversation_messages(change.thread_id)
+            if message.turn_id == change.turn_id
+        ]
 
     def _store(self) -> MemoryStore:
         engine = self._engine
@@ -798,6 +843,42 @@ def _optional_float(params: Mapping[str, JSONValue], key: str, *, default: float
     if not 0.0 <= number <= 100.0:
         raise ValueError("number outside range")
     return number
+
+
+def _thread_view(thread: ConversationThread) -> dict[str, JSONValue]:
+    """One thread entry, shaped identically for snapshots and `thread_updated`."""
+
+    return {
+        "id": thread.id,
+        "title": _display_text(thread.title, maximum_bytes=_TITLE_TEXT_BYTES),
+        "title_source": thread.title_source,
+        "updated_at": thread.updated_at,
+    }
+
+
+def _message_view(message: StoredMessage) -> dict[str, JSONValue]:
+    """One message, shaped identically for snapshots and `message_added`."""
+
+    return {
+        "id": message.id,
+        "thread_id": message.thread_id,
+        "turn_id": message.turn_id,
+        "role": message.role,
+        "content": _display_text(message.content),
+        "created_at": message.created_at,
+    }
+
+
+def _memory_view(memory: StoredMemory) -> dict[str, JSONValue]:
+    """One memory, shaped identically for snapshots and `memory_updated`."""
+
+    return {
+        "id": memory.id,
+        "content": _display_text(memory.content),
+        "source": memory.source,
+        "importance": memory.importance,
+        "created_at": memory.created_at,
+    }
 
 
 def _display_text(value: str, *, maximum_bytes: int = _DISPLAY_TEXT_BYTES) -> str:

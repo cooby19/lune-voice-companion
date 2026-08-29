@@ -560,8 +560,11 @@
         const item = body.thread || body;
         const id = stringValue(firstValue(item.id, item.thread_id, item.threadId));
         const existing = asArray(raw.threads);
+        // The snapshot arrives ordered by `updated_at` descending and the
+        // sidebar renders that order as-is, so a touched thread goes to the
+        // head rather than the tail.
         raw.threads = id
-          ? [...existing.filter((thread) => stringValue(thread.id) !== id), item]
+          ? [item, ...existing.filter((thread) => stringValue(thread.id) !== id)]
           : existing;
         if (name === "thread_created" && id) {
           raw.active_thread_id = id;
@@ -586,6 +589,7 @@
         }
         break;
       }
+      case "memory_updated":
       case "memories_changed":
       case "memory_list_changed":
         raw.memories = asArray(firstValue(body.memories, body.items));
@@ -630,7 +634,10 @@
         thread_id: snapshot.call.threadId,
         mode: snapshot.call.mode,
         readonly: snapshot.call.readonly,
-        elapsed_seconds: snapshot.call.elapsedSeconds,
+        // `applySnapshot` re-bases the local timer from this value.  With the
+        // whole snapshot now arriving rarely, replaying a stale count on every
+        // merged event would visibly rewind the call clock.
+        elapsed_seconds: snapshot.call.active ? currentElapsed() : snapshot.call.elapsedSeconds,
         speak_text: snapshot.call.speakText,
       },
       device: {

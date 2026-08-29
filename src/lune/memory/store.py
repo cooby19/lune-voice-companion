@@ -6,8 +6,8 @@ import os
 import sqlite3
 import stat
 import threading
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -26,6 +26,8 @@ EMBEDDING_DIMENSIONS = 384
 type FloatArray = npt.NDArray[np.float32]
 type ThreadTitleSource = Literal["default", "generated", "manual"]
 type MemorySource = Literal["user_requested", "lune_observed"]
+type StoreChangeKind = Literal["thread", "messages", "memories"]
+type StoreChangeListener = Callable[[StoreChange], None]
 
 DEFAULT_CONVERSATION_TITLE: Final[str] = "新對話"
 _MEMORY_CATEGORIES = frozenset(
@@ -105,6 +107,20 @@ class RelationshipEvent:
     created_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class StoreChange:
+    """A committed change to one UI-visible collection, carrying identifiers only.
+
+    It deliberately holds no conversation, memory or title text.  A listener
+    reads back exactly the rows it intends to show, so this notice can be
+    queued or dropped without ever parking private text outside the database.
+    """
+
+    kind: StoreChangeKind
+    thread_id: str | None = None
+    turn_id: str | None = None
+
+
 class MemoryStore:
     """Own one configured SQLite connection and serialize all local mutations."""
 
@@ -123,6 +139,7 @@ class MemoryStore:
         self._ephemeral = ephemeral
         self._lock = threading.RLock()
         self._closed = False
+        self._change_listener: StoreChangeListener | None = None
         if not ephemeral:
             self._prepare_private_path()
         self._connection = sqlite3.connect(
@@ -159,6 +176,30 @@ class MemoryStore:
         assert row is not None
         return row[0]
 
+    def set_change_listener(self, listener: StoreChangeListener | None) -> None:
+        """Register the single observer notified after a UI-visible commit.
+
+        There is one observer on purpose: the authenticated UI.  A listener runs
+        on whichever task performed the write, so it must return promptly and
+        must not call back into a write of its own.
+        """
+
+        self._change_listener = listener
+
+    def _notify(self, change: StoreChange) -> None:
+        """Announce a committed change without letting the observer break it.
+
+        The write has already been committed and its lock released, so a
+        listener can read the store back, and a failing observer must not turn a
+        durable local write into a caller-visible error.
+        """
+
+        listener = self._change_listener
+        if listener is None:
+            return
+        with suppress(Exception):
+            listener(change)
+
     def close(self) -> None:
         with self._lock:
             if not self._closed:
@@ -192,20 +233,23 @@ class MemoryStore:
                 """,
                 (identifier, timestamp, clean_title, title_source, timestamp),
             )
+        self._notify(StoreChange("thread", thread_id=identifier))
         return identifier
 
     def end_session(self, session_id: str, *, at: datetime | None = None) -> None:
         timestamp = _timestamp(at)
+        identifier = _validated_id(session_id, "session")
         with self._write():
             cursor = self._connection.execute(
                 """
                 UPDATE sessions SET ended_at = ?, updated_at = ?
                 WHERE id = ? AND ended_at IS NULL
                 """,
-                (timestamp, timestamp, _validated_id(session_id, "session")),
+                (timestamp, timestamp, identifier),
             )
             if cursor.rowcount != 1:
                 raise ValueError("unknown or already ended session")
+        self._notify(StoreChange("thread", thread_id=identifier))
 
     def begin_turn(
         self,
@@ -268,6 +312,11 @@ class MemoryStore:
         completed_at = _timestamp(at)
         with self._write():
             self._require_pending_turn(turn_id)
+            session_row = self._connection.execute(
+                "SELECT session_id FROM turns WHERE id = ?", (turn_id,)
+            ).fetchone()
+            assert session_row is not None
+            thread_id = str(session_row[0])
             roles = {
                 str(row[0])
                 for row in self._connection.execute(
@@ -287,6 +336,11 @@ class MemoryStore:
                 """,
                 (completed_at, turn_id),
             )
+        # Completing the turn is the moment its final text becomes readable
+        # through `conversation_messages`, and the moment the thread's position
+        # in the recency-ordered index moves.  Both are UI-visible.
+        self._notify(StoreChange("messages", thread_id=thread_id, turn_id=turn_id))
+        self._notify(StoreChange("thread", thread_id=thread_id))
 
     def cancel_turn(self, turn_id: str, *, at: datetime | None = None) -> None:
         turn_id = _validated_id(turn_id, "turn")
@@ -384,6 +438,7 @@ class MemoryStore:
                 """,
                 (clean_title, updated_at, identifier),
             )
+        self._notify(StoreChange("thread", thread_id=identifier))
         return ConversationThread(
             id=identifier,
             title=clean_title,
@@ -414,7 +469,10 @@ class MemoryStore:
                 """,
                 (clean_title, _timestamp(at), identifier),
             )
-            return cursor.rowcount == 1
+            renamed = cursor.rowcount == 1
+        if renamed:
+            self._notify(StoreChange("thread", thread_id=identifier))
+        return renamed
 
     def recent_complete_turns(self, session_id: str, *, limit: int = 12) -> tuple[StoredTurn, ...]:
         if limit <= 0:
@@ -615,6 +673,7 @@ class MemoryStore:
             if "normalized_content" in str(error) or "long_term_memories.id" in str(error):
                 return None
             raise ValueError("memory source turn does not exist") from error
+        self._notify(StoreChange("memories"))
         return StoredMemory(
             memory_id,
             category,
@@ -641,7 +700,10 @@ class MemoryStore:
                 "DELETE FROM long_term_memories WHERE id = ?",
                 (_validated_id(exact_id, "memory"),),
             )
-            return cursor.rowcount == 1
+            forgotten = cursor.rowcount == 1
+        if forgotten:
+            self._notify(StoreChange("memories"))
+        return forgotten
 
     def affinity(self) -> int:
         row = self._execute("SELECT affinity FROM relationship_state WHERE id = 1").fetchone()

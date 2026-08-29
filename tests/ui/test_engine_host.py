@@ -6,6 +6,7 @@ import json
 from contextlib import suppress
 from pathlib import Path
 
+import numpy as np
 import pytest
 from websockets.asyncio.client import connect
 
@@ -20,7 +21,7 @@ from lune.config import (
     Style,
 )
 from lune.engine import run_ui_ipc
-from lune.memory.store import MemoryStore
+from lune.memory.store import EMBEDDING_DIMENSIONS, MemoryStore
 from lune.paths import LunePaths
 
 
@@ -188,3 +189,185 @@ async def test_ui_ipc_child_hands_off_once_serves_status_and_closes_cleanly(tmp_
                 await child
     assert handoff.getvalue().count("\n") == 1
     assert fake.closed is True
+
+
+async def _drain_frames(socket: object, *, quiet_for: float = 0.05) -> list[dict[str, object]]:
+    """Collect frames until the socket has been quiet, so a test can start clean."""
+
+    frames: list[dict[str, object]] = []
+    while True:
+        try:
+            raw = await asyncio.wait_for(socket.recv(), timeout=quiet_for)  # type: ignore[attr-defined]
+        except TimeoutError:
+            return frames
+        frames.append(json.loads(raw))
+
+
+async def _collect_events(socket: object, count: int) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for _ in range(40):
+        message = json.loads(await asyncio.wait_for(socket.recv(), timeout=2.0))  # type: ignore[attr-defined]
+        if message.get("type") == "event":
+            events.append(message)
+            if len(events) >= count:
+                return events
+    raise AssertionError(f"did not receive {count} events, saw {events}")
+
+
+@pytest.mark.asyncio
+async def test_a_turn_reaches_the_authenticated_ui_as_events_not_a_whole_snapshot(
+    tmp_path: Path,
+) -> None:
+    """End to end, one turn must cost its own two messages and nothing else.
+
+    The reconciliation interval is set far beyond the test's lifetime, so any
+    frame observed after the seeding ``get_status`` is an incremental event.
+    """
+
+    paths = LunePaths(support=tmp_path / "support", logs=tmp_path / "logs")
+    _write_ready_private_setup(paths)
+    fake = HostFakeEngine()
+    handoff = io.StringIO()
+
+    async def build() -> HostFakeEngine:
+        return fake
+
+    child = asyncio.create_task(
+        run_ui_ipc(
+            paths,
+            engine_factory=build,
+            handoff_stream=handoff,
+            snapshot_interval_s=30.0,
+            install_signal_handlers=False,
+        )
+    )
+    payload = await _wait_for_handoff(handoff)
+    url = f"ws://127.0.0.1:{payload['port']}"
+    try:
+        async with connect(url, compression=None) as socket:
+            await socket.send(
+                json.dumps(
+                    {
+                        "type": "hello",
+                        "protocol": payload["protocol"],
+                        "token": payload["token"],
+                    }
+                )
+            )
+            assert json.loads(await socket.recv())["type"] == "hello_ack"
+            await socket.send(
+                json.dumps({"type": "command", "id": "seed", "command": "get_status", "params": {}})
+            )
+            await _receive_result(socket, "seed")
+            await _drain_frames(socket)
+
+            turn_id = fake.store.begin_turn("engine-thread", 1)
+            fake.store.accept_user_transcript(turn_id, "使用者說的話")
+            fake.store.append_assistant_playback(turn_id, "Lune 回的話")
+            fake.store.complete_turn(turn_id)
+
+            events = await _collect_events(socket, 3)
+            assert [event["event"] for event in events] == [
+                "message_added",
+                "message_added",
+                "thread_updated",
+            ]
+            messages = [event["payload"]["message"] for event in events[:2]]
+            assert [message["role"] for message in messages] == ["user", "assistant"]
+            assert [message["content"] for message in messages] == ["使用者說的話", "Lune 回的話"]
+            assert all(message["thread_id"] == "engine-thread" for message in messages)
+            assert events[2]["payload"]["thread"]["id"] == "engine-thread"
+            # Nothing re-sent the whole state to say what the events already did.
+            assert [frame["event"] for frame in await _drain_frames(socket)] == []
+
+            await socket.send(
+                json.dumps({"type": "command", "id": "stop", "command": "shutdown", "params": {}})
+            )
+            await _receive_result(socket, "stop")
+        assert await asyncio.wait_for(child, timeout=2.0) == 0
+    finally:
+        if not child.done():
+            child.cancel()
+            with suppress(asyncio.CancelledError):
+                await child
+
+
+@pytest.mark.asyncio
+async def test_a_forgotten_memory_reaches_the_ui_as_a_memory_event(tmp_path: Path) -> None:
+    paths = LunePaths(support=tmp_path / "support", logs=tmp_path / "logs")
+    _write_ready_private_setup(paths)
+    fake = HostFakeEngine()
+    turn_id = fake.store.begin_turn("engine-thread", 1)
+    fake.store.accept_user_transcript(turn_id, "使用者說的話")
+    fake.store.append_assistant_playback(turn_id, "Lune 回的話")
+    fake.store.complete_turn(turn_id)
+    vector = np.zeros(EMBEDDING_DIMENSIONS, dtype=np.float32)
+    vector[0] = 1.0
+    fake.store.add_memory(
+        memory_id="memory-one",
+        content="她記得的事",
+        category="stable_preference",
+        importance=0.6,
+        embedding=vector,
+        embedding_model="test-model",
+        embedding_revision="test-revision",
+        source_turn_id=turn_id,
+    )
+    handoff = io.StringIO()
+
+    async def build() -> HostFakeEngine:
+        return fake
+
+    child = asyncio.create_task(
+        run_ui_ipc(
+            paths,
+            engine_factory=build,
+            handoff_stream=handoff,
+            snapshot_interval_s=30.0,
+            install_signal_handlers=False,
+        )
+    )
+    payload = await _wait_for_handoff(handoff)
+    url = f"ws://127.0.0.1:{payload['port']}"
+    try:
+        async with connect(url, compression=None) as socket:
+            await socket.send(
+                json.dumps(
+                    {
+                        "type": "hello",
+                        "protocol": payload["protocol"],
+                        "token": payload["token"],
+                    }
+                )
+            )
+            assert json.loads(await socket.recv())["type"] == "hello_ack"
+            await socket.send(
+                json.dumps({"type": "command", "id": "seed", "command": "get_status", "params": {}})
+            )
+            await _receive_result(socket, "seed")
+            await _drain_frames(socket)
+
+            await socket.send(
+                json.dumps(
+                    {
+                        "type": "command",
+                        "id": "forget",
+                        "command": "forget_memory",
+                        "params": {"memory_id": "memory-one", "confirmation": "memory-one"},
+                    }
+                )
+            )
+            events = await _collect_events(socket, 1)
+            assert events[0]["event"] == "memory_updated"
+            assert events[0]["payload"]["memories"] == []
+
+            await socket.send(
+                json.dumps({"type": "command", "id": "stop", "command": "shutdown", "params": {}})
+            )
+            await _receive_result(socket, "stop")
+        assert await asyncio.wait_for(child, timeout=2.0) == 0
+    finally:
+        if not child.done():
+            child.cancel()
+            with suppress(asyncio.CancelledError):
+                await child

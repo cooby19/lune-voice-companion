@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any, Protocol, TextIO
+from typing import Any, Final, Protocol, TextIO
 
 from lune.audio.coreaudio import CoreAudioStreamOwner, StreamOwnerHealth
 from lune.audio.devices import DeviceSnapshot
@@ -42,6 +42,11 @@ from lune.tts.contracts import PCMChunk
 from lune.tts.factory import build_tts_router
 from lune.tts.router import TTSRouterService
 from lune.ui.runtime import EngineControl, EngineFactory, UiCommandError, UiRuntime
+
+# A local WebView keeps up easily, so this only bounds the memory a stalled one
+# can cost.  Overflow degrades latency, never accuracy: the reconciling
+# snapshot still carries whatever the dropped events would have said.
+UI_EVENT_QUEUE_CAPACITY: Final = 256
 
 
 class AsyncCloser(Protocol):
@@ -588,7 +593,7 @@ async def run_ui_ipc(
     *,
     engine_factory: EngineFactory | None = None,
     handoff_stream: TextIO | None = None,
-    snapshot_interval_s: float = 0.2,
+    snapshot_interval_s: float = 2.0,
     install_signal_handlers: bool = True,
 ) -> int:
     """Run the engine child behind the authenticated local Web UI protocol.
@@ -596,6 +601,11 @@ async def run_ui_ipc(
     The one-time handoff is the only stdout output in this mode.  It is meant
     solely for the pywebview parent process; application state and private text
     travel over the authenticated WebSocket instead of a process log.
+
+    Conversation, thread and memory changes reach the UI as incremental events
+    the moment they commit.  ``snapshot_interval_s`` only paces the whole-state
+    reconciliation that covers what no event carries, so a turn no longer
+    re-sends every thread's private text several times a second.
     """
 
     if snapshot_interval_s <= 0:
@@ -620,7 +630,34 @@ async def run_ui_ipc(
             return await engine_factory()
         return await build_default_engine(local_paths)
 
-    runtime = UiRuntime(local_paths, build_engine)
+    events: asyncio.Queue[tuple[str, dict[str, JSONValue]]] = asyncio.Queue(
+        maxsize=UI_EVENT_QUEUE_CAPACITY
+    )
+    overflowed = False
+
+    def publish_ui_event(event: str, payload: dict[str, JSONValue]) -> None:
+        """Hand one incremental event to the pump without ever blocking a write.
+
+        The store notifies from the task that committed the row.  Waiting for a
+        slow WebView here would stall the pipeline, so a full queue drops the
+        event and marks the client as needing the next whole-state snapshot.
+        """
+
+        nonlocal overflowed
+        try:
+            events.put_nowait((event, payload))
+        except asyncio.QueueFull:
+            overflowed = True
+
+    def drain_overflow() -> bool:
+        """Report and clear whether any event was dropped since the last check."""
+
+        nonlocal overflowed
+        dropped = overflowed
+        overflowed = False
+        return dropped
+
+    runtime = UiRuntime(local_paths, build_engine, event_sink=publish_ui_event)
     server: LoopbackIPCServer | None = None
 
     async def handle_ui_command(command: str, params: Mapping[str, JSONValue]) -> JSONValue:
@@ -651,8 +688,8 @@ async def run_ui_ipc(
         # first so it can show a responsive, private-data-free preparing state.
         startup_task = asyncio.create_task(runtime.start(), name="lune-ui-startup")
         broadcaster = asyncio.create_task(
-            _broadcast_ui_snapshots(server, runtime, snapshot_interval_s),
-            name="lune-ui-snapshots",
+            _broadcast_ui_state(server, runtime, events, drain_overflow, snapshot_interval_s),
+            name="lune-ui-events",
         )
         if install_signal_handlers:
             _install_ui_signal_handlers(request_host_stop)
@@ -677,20 +714,46 @@ async def run_ui_ipc(
         await runtime.close()
 
 
-async def _broadcast_ui_snapshots(
+async def _broadcast_ui_state(
     server: LoopbackIPCServer,
     runtime: UiRuntime,
-    interval_s: float,
+    events: asyncio.Queue[tuple[str, dict[str, JSONValue]]],
+    dropped_any_event: Callable[[], bool],
+    reconcile_interval_s: float,
 ) -> None:
-    """Push only changed, bounded snapshots to the authenticated WebView."""
+    """Serve incremental events, and reconcile with a whole snapshot rarely.
+
+    Both channels go out from this one task so the authenticated client always
+    applies them in the order they were produced.  Sending an event also
+    advances the reconciliation baseline: the client has already been told
+    about that change, so re-sending every thread's private text would add
+    nothing.  Any dropped event clears the baseline instead, which turns the
+    next tick into a full correction.
+
+    ``server.broadcast`` drops a peer that cannot keep up rather than waiting on
+    it, so a stalled WebView cannot hold this loop or the engine behind it.
+    """
 
     previous: dict[str, JSONValue] | None = None
+    loop = asyncio.get_running_loop()
+    deadline = loop.time()
     while not runtime.shutdown_requested and server.running:
-        snapshot = runtime.snapshot()
-        if snapshot != previous:
-            await server.broadcast("snapshot", snapshot)
-            previous = snapshot
-        await asyncio.sleep(interval_s)
+        timeout = deadline - loop.time()
+        if timeout <= 0:
+            if dropped_any_event():
+                previous = None
+            snapshot = runtime.snapshot()
+            if snapshot != previous:
+                await server.broadcast("snapshot", snapshot)
+                previous = snapshot
+            deadline = loop.time() + reconcile_interval_s
+            continue
+        try:
+            event, payload = await asyncio.wait_for(events.get(), timeout=timeout)
+        except TimeoutError:
+            continue
+        await server.broadcast(event, payload)
+        previous = runtime.snapshot()
 
 
 def _write_ui_handoff(payload: str, stream: TextIO) -> None:

@@ -646,6 +646,10 @@ UI 出現前，`lune-engine --microphone` 是唯一能開始對話的方式（�
   `device_changed`、`budget_changed`、`error`。這仍是基準集合（`COMMAND_NAMES`／
   `EVENT_NAMES`）；視窗 UI 另有 `UI_COMMAND_NAMES`／`UI_EVENT_NAMES` 超集合，涵蓋多
   thread、文字輸入、記憶與人格設定，定義在 `src/lune/ipc/contracts.py`。
+- UI 事件裡的 `message_added`、`thread_updated`、`memory_updated` **已有發送端**：
+  `MemoryStore` 在寫入 commit 後通知，`UiRuntime` 轉成與 snapshot 同形狀的 payload，
+  `snapshot` 退為低頻對帳。契約與取捨見 `docs/ui-spec.md` 的「兩條通道」。
+  `budget_changed` 仍只有名稱，沒有發送端，`app.js` 也沒有對應分支。
 - 冷啟動 mic off；內建喇叭保持 `paused_unsafe_output`；預設裝置 UID 只留在記憶體，不能
   寫入公開 log。
 - Quit 先 graceful shutdown；逾時只處理 handshake 驗證過的 engine／worker PID。
