@@ -1,0 +1,45 @@
+"""Authenticated loopback IPC primitives for the local Web UI."""
+
+from lune.ipc.contracts import (
+    COMMAND_NAMES,
+    ERROR_CODES,
+    EVENT_NAMES,
+    LOOPBACK_HOST,
+    MAX_JSON_DEPTH,
+    MAX_MESSAGE_BYTES,
+    PROTOCOL_VERSION,
+    UI_COMMAND_NAMES,
+    UI_EVENT_NAMES,
+    CommandName,
+    CommandRejected,
+    ErrorCode,
+    EventName,
+    IPCCommand,
+    IPCConnectionInfo,
+    IPCProtocolError,
+    JSONValue,
+)
+from lune.ipc.server import BroadcastResult, CommandHandler, LoopbackIPCServer
+
+__all__ = [
+    "COMMAND_NAMES",
+    "ERROR_CODES",
+    "EVENT_NAMES",
+    "LOOPBACK_HOST",
+    "MAX_JSON_DEPTH",
+    "MAX_MESSAGE_BYTES",
+    "PROTOCOL_VERSION",
+    "UI_COMMAND_NAMES",
+    "UI_EVENT_NAMES",
+    "BroadcastResult",
+    "CommandHandler",
+    "CommandName",
+    "CommandRejected",
+    "ErrorCode",
+    "EventName",
+    "IPCCommand",
+    "IPCConnectionInfo",
+    "IPCProtocolError",
+    "JSONValue",
+    "LoopbackIPCServer",
+]

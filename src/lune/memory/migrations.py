@@ -114,4 +114,28 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
         VALUES (1, 50, '1970-01-01T00:00:00+00:00');
         """,
     ),
+    Migration(
+        2,
+        """
+        ALTER TABLE sessions ADD COLUMN title TEXT NOT NULL DEFAULT '新對話'
+            CHECK (length(trim(title)) > 0);
+        ALTER TABLE sessions ADD COLUMN title_source TEXT NOT NULL DEFAULT 'default'
+            CHECK (title_source IN ('default', 'generated', 'manual'));
+        ALTER TABLE sessions ADD COLUMN updated_at TEXT NOT NULL
+            DEFAULT '1970-01-01T00:00:00+00:00';
+        UPDATE sessions
+        SET updated_at = COALESCE(ended_at, started_at)
+        WHERE updated_at = '1970-01-01T00:00:00+00:00';
+
+        ALTER TABLE long_term_memories ADD COLUMN source TEXT NOT NULL DEFAULT 'lune_observed'
+            CHECK (source IN ('user_requested', 'lune_observed'));
+        UPDATE long_term_memories
+        SET source = CASE
+            WHEN category = 'explicit_request' THEN 'user_requested'
+            ELSE 'lune_observed'
+        END;
+
+        CREATE INDEX sessions_updated_at ON sessions(updated_at DESC, id DESC);
+        """,
+    ),
 )

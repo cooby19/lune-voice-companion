@@ -20,8 +20,8 @@ from lune.memory.store import MemoryStore
 from lune.memory.summary import RollingSummaryManager
 from lune.pipeline.coordinator import GenerationCoordinator, ProviderFence
 from lune.pipeline.enricher import ContextEnricher
-from lune.pipeline.playback import AudioOutputDevice, PlaybackSink
-from lune.pipeline.session import FinalOnlySTT, ProviderFenceGroup, VoiceSession
+from lune.pipeline.playback import DEFAULT_CAPACITY, AudioOutputDevice, PlaybackSink
+from lune.pipeline.session import FinalOnlySTT, ProviderFenceGroup, SampleClock, VoiceSession
 from lune.pipeline.turn_gate import VoicedDetector, VoiceTurnGate
 from lune.stt.contracts import STTEvent
 from lune.tts.router import TTSRouterService
@@ -72,10 +72,12 @@ def build_voice_pipeline(
     provider_fences: Sequence[ProviderFence] = (),
     summarizer: RollingSummaryManager | None = None,
     rebuild_streams: Callable[[DeviceSnapshot], MaybeAwaitable] | None = None,
+    primary_model: ModelName | None = None,
     transport: LocalAudioTransport | None = None,
+    sample_clock: SampleClock | None = None,
     audio: AudioConfig | None = None,
     diagnostics: SafeDiagnostics | None = None,
-    playback_capacity: int = 32,
+    playback_capacity: int = DEFAULT_CAPACITY,
     max_output_tokens: int = 192,
     stt_timeout_s: float = 10.0,
 ) -> VoicePipeline:
@@ -130,8 +132,10 @@ def build_voice_pipeline(
         proposals=proposals,
         summarizer=summarizer,
         rebuild_streams=rebuild_streams,
+        primary_model=primary_model,
         max_output_tokens=max_output_tokens,
         stt_timeout_s=stt_timeout_s,
+        sample_clock=sample_clock or transport,
         diagnostics=diagnostics,
     )
     sink.bind(session.on_stt_event)

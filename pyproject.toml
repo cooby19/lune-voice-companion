@@ -21,6 +21,7 @@ dependencies = [
   "pyobjc-framework-AVFoundation==11.1; sys_platform == 'darwin'",
   "pyobjc-framework-CoreAudio==11.1; sys_platform == 'darwin'",
   "pyobjc-framework-Security==11.1; sys_platform == 'darwin'",
+  "pywebview==6.2.1 ; sys_platform == 'darwin'",
   "pyyaml==6.0.3",
   "rumps==0.4.0; sys_platform == 'darwin'",
   "websockets==15.0.1",
@@ -60,6 +61,10 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC", "S", "RUF"]
 ignore = ["S101"]
+# User-facing copy is Traditional Chinese, where fullwidth punctuation is the
+# correct typography rather than a confusable typo.  Latin-mixed strings such as
+# "Whisper 與記憶模型可在背景準備；..." would otherwise trip RUF001.
+allowed-confusables = ["，", "；", "（", "）"]
 
 [tool.mypy]
 python_version = "3.12"

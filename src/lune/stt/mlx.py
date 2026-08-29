@@ -7,7 +7,7 @@ import importlib
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from types import ModuleType
-from typing import Protocol, cast
+from typing import Final, Protocol, cast
 
 import numpy as np
 
@@ -25,6 +25,17 @@ class InferenceFunction(Protocol):
 
 
 EventSink = Callable[[STTEvent], Awaitable[None]]
+
+DECODING_TEMPERATURES: Final[tuple[float, float]] = (0.0, 0.2)
+"""One retry, not upstream's six.
+
+Measured on the target Mac on 2026-08-29: a confident decode of real microphone
+speech takes about 1.9 s, but a low-confidence one walked the default ladder up
+to 1.0 and took 6.6-10.3 s, blowing through the 10 s watchdog and queueing the
+next utterance behind it. The retries produced one to seven characters of noise,
+so the ladder bought nothing here. A single retry keeps a recovery path while
+bounding the worst case.
+"""
 
 
 class _SetupRequiredError(Exception):
@@ -49,6 +60,7 @@ def _default_inference(request: TranscriptionRequest, model_root: Path) -> str:
     options: dict[str, object] = {
         "path_or_hf_repo": str(model_root),
         "verbose": None,
+        "temperature": DECODING_TEMPERATURES,
     }
     if request.language_hint is not None:
         options["language"] = request.language_hint

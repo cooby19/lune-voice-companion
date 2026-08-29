@@ -1,7 +1,14 @@
+from pathlib import Path
+
 import pytest
 from pipecat.services.openai.responses.llm import OpenAIResponsesLLMService
 
-from lune.llm.provider import LLMProviderFactory, OpenAIResponsesProviderConfig
+from lune.llm.local_qwen import LocalQwenLLMService
+from lune.llm.provider import (
+    LLMProviderFactory,
+    LocalQwenProviderConfig,
+    OpenAIResponsesProviderConfig,
+)
 
 
 @pytest.mark.asyncio
@@ -42,3 +49,34 @@ async def test_openai_registry_builds_independent_websocket_services_with_safe_p
 
     await primary.cleanup()
     await fallback.cleanup()
+
+
+def test_local_registry_builds_the_on_device_service_without_touching_the_disk() -> None:
+    config = LocalQwenProviderConfig(
+        model_dir=Path("/nonexistent/qwen-local"),
+        runtime_python=Path("/nonexistent/qwen-runtime/bin/python"),
+        system_instruction="private instruction",
+    )
+    assert "private instruction" not in repr(config)
+    assert config.model == "qwen3.5-4b-q4-local"
+
+    service = LLMProviderFactory().build(config)
+    assert isinstance(service, LocalQwenLLMService)
+
+    capabilities = LLMProviderFactory().capabilities("local_qwen")
+    assert capabilities.function_calling is True
+    assert capabilities.usage_reporting is True
+    # The spike could not demonstrate a cancel landing before generation ended in
+    # every trial, so this stays unclaimed rather than assumed.
+    assert capabilities.remote_cancel is False
+
+
+def test_the_local_config_requires_a_persona_and_the_m3_output_bound() -> None:
+    paths = {
+        "model_dir": Path("/nonexistent/qwen-local"),
+        "runtime_python": Path("/nonexistent/qwen-runtime/bin/python"),
+    }
+    with pytest.raises(ValueError):
+        LocalQwenProviderConfig(**paths, system_instruction="")
+    with pytest.raises(ValueError):
+        LocalQwenProviderConfig(**paths, system_instruction="persona", max_output_tokens=0)

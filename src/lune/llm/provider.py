@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MappingProxyType
 from typing import Literal, Protocol, cast
 
@@ -12,7 +13,14 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import LLMService
 from pipecat.services.openai.responses.llm import OpenAIResponsesLLMService
 
-from lune.llm.contracts import ModelName, ProviderCapabilities, ProviderName
+from lune.llm.contracts import (
+    LOCAL_MODEL_NAME,
+    ModelName,
+    ProviderCapabilities,
+    ProviderName,
+)
+from lune.llm.local_qwen import LocalQwenLLMService
+from lune.llm_spike.worker import QwenWorkerHost, worker_script_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,7 +51,28 @@ class DeterministicFakeProviderConfig:
     frames: tuple[Frame, ...] = field(default=(), repr=False)
 
 
-type ProviderConfig = OpenAIResponsesProviderConfig | DeterministicFakeProviderConfig
+@dataclass(frozen=True, kw_only=True, slots=True)
+class LocalQwenProviderConfig:
+    """Point at an already-pinned local artifact; this never downloads anything."""
+
+    model_dir: Path
+    runtime_python: Path
+    system_instruction: str = field(default="", repr=False)
+    provider: Literal["local_qwen"] = "local_qwen"
+    model: ModelName = LOCAL_MODEL_NAME
+    max_output_tokens: int = 192
+    worker_script: Path | None = None
+
+    def __post_init__(self) -> None:
+        if not self.system_instruction:
+            raise ValueError("a private persona instruction is required")
+        if not 1 <= self.max_output_tokens <= 192:
+            raise ValueError("M3 output limit must be between one and 192 tokens")
+
+
+type ProviderConfig = (
+    OpenAIResponsesProviderConfig | DeterministicFakeProviderConfig | LocalQwenProviderConfig
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +121,15 @@ class LLMProviderFactory:
                 remote_cancel=True,
                 usage_reporting=True,
             ),
+            # `remote_cancel` stays false because the spike could not prove in every
+            # trial that a cancel reached the worker before generation ended on its
+            # own (`docs/progress.md`). The host still kills the PID it spawned; the
+            # capability is only about what was demonstrated.
+            "local_qwen": ProviderCapabilities(
+                function_calling=True,
+                remote_cancel=False,
+                usage_reporting=True,
+            ),
         }
     )
 
@@ -99,6 +137,7 @@ class LLMProviderFactory:
         self._builders: dict[ProviderName, ProviderBuilder] = {
             "openai_responses": _build_openai_responses,
             "deterministic_fake": _build_fake,
+            "local_qwen": _build_local_qwen,
         }
 
     def capabilities(self, provider: ProviderName) -> ProviderCapabilities:
@@ -168,3 +207,18 @@ def _build_fake(config: ProviderConfig, hooks: ProviderHooks) -> LLMService:
     del hooks
     typed = cast(DeterministicFakeProviderConfig, config)
     return DeterministicFakeLLMService(typed.frames)
+
+
+def _build_local_qwen(config: ProviderConfig, hooks: ProviderHooks) -> LLMService:
+    del hooks
+    typed = cast(LocalQwenProviderConfig, config)
+    host = QwenWorkerHost(
+        python_executable=typed.runtime_python,
+        worker_script=typed.worker_script or worker_script_path(),
+        model_dir=typed.model_dir,
+    )
+    return LocalQwenLLMService(
+        host=host,
+        system_instruction=typed.system_instruction,
+        max_output_tokens=typed.max_output_tokens,
+    )

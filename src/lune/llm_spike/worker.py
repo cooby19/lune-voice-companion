@@ -14,7 +14,7 @@ import os
 import struct
 import tempfile
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Literal
@@ -164,8 +164,14 @@ class QwenWorkerHost:
         tools: Sequence[Mapping[str, Any]] | None = None,
         max_tokens: int = 192,
         cancel_after_first_token: bool = False,
+        on_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> GenerationOutcome:
-        """Run one generation, dropping anything that arrives for a stale generation."""
+        """Run one generation, dropping anything that arrives for a stale generation.
+
+        ``on_text`` receives each already-filtered visible chunk as it arrives, so a
+        streaming caller sees partial text without the outcome losing anything: the
+        returned text is still the whole generation.
+        """
 
         self._current_generation = generation_id
         await self._send(
@@ -181,6 +187,7 @@ class QwenWorkerHost:
         return await self._collect(
             generation_id=generation_id,
             cancel_after_first_token=cancel_after_first_token,
+            on_text=on_text,
         )
 
     async def _collect(
@@ -188,6 +195,7 @@ class QwenWorkerHost:
         *,
         generation_id: int,
         cancel_after_first_token: bool,
+        on_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> GenerationOutcome:
         thinking = ThinkingFilter()
         extractor = ToolCallExtractor()
@@ -213,6 +221,8 @@ class QwenWorkerHost:
                 extracted = extractor.feed(filtered.text)
                 visible.append(extracted.text)
                 tool_calls.extend(extracted.tool_calls)
+                if on_text is not None and extracted.text:
+                    await on_text(extracted.text)
                 if first_sentence_ms is None and _has_sentence("".join(visible)):
                     first_sentence_ms = (time.perf_counter() - started) * 1000.0
                 if cancel_after_first_token and cancel_sent_at is None:
@@ -235,6 +245,10 @@ class QwenWorkerHost:
         closing = extractor.finish()
         visible.append(closing.text)
         tool_calls.extend(closing.tool_calls)
+        if on_text is not None:
+            for remainder in (final.text, closing.text):
+                if remainder:
+                    await on_text(remainder)
 
         return GenerationOutcome(
             generation_id=generation_id,
@@ -347,10 +361,6 @@ def _optional_int(value: Any) -> int | None:
 
 def _optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) else None
-
-
-def default_runtime_python(support_root: Path) -> Path:
-    return support_root / "models" / "qwen-runtime" / "bin" / "python"
 
 
 def worker_script_path() -> Path:

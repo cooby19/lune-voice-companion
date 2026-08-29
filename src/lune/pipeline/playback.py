@@ -13,6 +13,18 @@ import numpy as np
 from lune.tts.contracts import PCMChunk
 
 DEFAULT_SILENCE_FLOOR = 32
+DEFAULT_CAPACITY = 512
+"""Hold one whole sentence of AVSpeech PCM.
+
+AVSpeech pushes an entire utterance before the writer is scheduled, which is
+why M6 raised the adapter's own queue to 512. This queue sits downstream of
+that one and needs the same bound: measured on the target Mac on 2026-08-29,
+a normal ~3 s Chinese reply produced far more than 32 chunks, so the release
+voice path cancelled every turn with ``output_overflow``. Back pressure is not
+available here — the native callback pushes on the main thread — so the queue
+has to absorb the burst that ``_speak`` then drains one sentence at a time.
+"""
+
 _MAX_TRACKED_GENERATIONS = 128
 
 
@@ -46,7 +58,7 @@ class PlaybackSink:
         self,
         device: AudioOutputDevice,
         *,
-        capacity: int = 32,
+        capacity: int = DEFAULT_CAPACITY,
         silence_floor: int = DEFAULT_SILENCE_FLOOR,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:

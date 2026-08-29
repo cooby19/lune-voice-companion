@@ -12,7 +12,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from lune.config import BudgetConfig
-from lune.llm.contracts import AttemptUsageFrame, ModelName
+from lune.llm.contracts import LOCAL_MODEL_NAME, AttemptUsageFrame, ModelName
 
 _MILLION: Final[Decimal] = Decimal(1_000_000)
 PRICE_VERSION: Final[str] = "openai-standard-2026-07-30"
@@ -39,6 +39,15 @@ PRICES: Final[Mapping[ModelName, ModelPrice]] = MappingProxyType(
             cached_input_usd_per_million=Decimal("0.02"),
             cache_write_input_usd_per_million=Decimal("0.25"),
             output_usd_per_million=Decimal("1.20"),
+        ),
+        # On-device inference sends nothing to a paid endpoint. It is priced here
+        # rather than excluded so a local attempt still settles through the one
+        # ledger path and the cloud composition needs no accounting rewrite.
+        LOCAL_MODEL_NAME: ModelPrice(
+            input_usd_per_million=Decimal(0),
+            cached_input_usd_per_million=Decimal(0),
+            cache_write_input_usd_per_million=Decimal(0),
+            output_usd_per_million=Decimal(0),
         ),
     }
 )
@@ -142,7 +151,10 @@ class BudgetLedger:
         if max_input_tokens < 0 or max_output_tokens <= 0:
             raise ValueError("reservation token bounds must be non-negative and non-zero")
         reserved_twd = self._reservation_cost(model, max_input_tokens, max_output_tokens)
-        if self.total_with_reservations(at) + reserved_twd >= self._lock:
+        # A free attempt cannot move the monthly total, so the cloud lock must not
+        # block it: locking is what makes on-device inference a fork rather than a
+        # dead end.
+        if reserved_twd > 0 and self.total_with_reservations(at) + reserved_twd >= self._lock:
             raise BudgetLocked("monthly cloud budget is locked")
         reservation = AttemptReservation(
             attempt_id=uuid4().hex,

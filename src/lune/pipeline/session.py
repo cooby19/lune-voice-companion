@@ -47,6 +47,12 @@ _GENERATION_SCOPED_STATES: frozenset[str] = frozenset({"thinking", "speaking"})
 """States that describe one generation's work and expire when it is cancelled."""
 
 
+class SampleClock(Protocol):
+    """Maps a captured sample offset back to wall-clock time."""
+
+    def wall_time_of_sample(self, sample: int) -> float | None: ...
+
+
 class FinalOnlySTT(Protocol):
     def set_generation(self, generation_id: int) -> None: ...
 
@@ -71,6 +77,7 @@ class _ActiveTurn:
     generation_id: int
     turn_id: str
     validator: ToolCallValidator = field(repr=False)
+    speak_text: bool = True
     spoke: bool = False
     degraded: bool = False
     failed: bool = False
@@ -115,11 +122,13 @@ class VoiceSession:
         proposals: ProposalHost,
         summarizer: RollingSummaryManager | None = None,
         rebuild_streams: Callable[[DeviceSnapshot], MaybeAwaitable] | None = None,
+        primary_model: ModelName | None = None,
         max_output_tokens: int = 192,
         max_input_tokens: int = 4_096,
         stt_timeout_s: float = 10.0,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         monotonic: Callable[[], float] = time.monotonic,
+        sample_clock: SampleClock | None = None,
         diagnostics: SafeDiagnostics | None = None,
     ) -> None:
         if stt_timeout_s <= 0:
@@ -141,12 +150,14 @@ class VoiceSession:
         self._stt_timeout_s = stt_timeout_s
         self._now = now
         self._monotonic = monotonic
+        self._sample_clock = sample_clock
         self._diagnostics = diagnostics
         self._generator = ConversationGenerator(
             providers=providers,
             ledger=ledger,
             current_generation=lambda: self._coordinator.generation_id,
             emit=self._on_llm_frame,
+            primary_model=primary_model,
         )
         self._devices = DeviceStateMachine(
             cancel_generation=self._cancel_for_devices,
@@ -193,6 +204,13 @@ class VoiceSession:
         return self._degraded_tts
 
     @property
+    def output_is_builtin(self) -> bool | None:
+        """Return only the safe output category; never expose device identifiers."""
+
+        snapshot = self._devices.snapshot
+        return None if snapshot is None else snapshot.output.is_builtin
+
+    @property
     def reports(self) -> tuple[TurnReport, ...]:
         return tuple(self._reports)
 
@@ -237,9 +255,43 @@ class VoiceSession:
             self._set_state(failure, event.generation_id)
             self._emit(event="stt_failed", generation_id=event.generation_id)
             return
-        task = asyncio.create_task(self._run_turn(event), name="lune-turn")
-        self._turn_tasks.add(task)
-        task.add_done_callback(self._turn_tasks.discard)
+        self._schedule_turn(event, speak_text=True)
+
+    async def submit_text(self, text: str, *, speak_text: bool = True) -> AppState:
+        """Submit typed input through the same fenced turn path as final STT.
+
+        A typed message during a response is a barge-in.  It advances the
+        central generation fence before the new turn is scheduled, but unlike
+        spoken barge-in it never carries microphone frames into the next turn.
+        """
+
+        clean = text.strip()
+        if not clean or len(clean) > 20_000:
+            raise ValueError("text input must contain 1 to 20,000 characters")
+        if self._closed:
+            raise RuntimeError("session is closed")
+        if self._ai_active:
+            await self._coordinator.cancel("text_barge_in")
+        generation_id = self._coordinator.generation_id
+        self._set_state("thinking", generation_id)
+        self._schedule_turn(
+            FinalTranscript(
+                request_id=uuid4().hex,
+                generation_id=generation_id,
+                text=clean,
+            ),
+            speak_text=speak_text,
+        )
+        return self.state
+
+    def switch_thread(self, thread_id: str) -> None:
+        """Move an idle pipeline to another persisted conversation thread."""
+
+        if self._ai_active or any(not task.done() for task in self._turn_tasks):
+            raise RuntimeError("cannot switch conversation while a turn is active")
+        if self._store.get_conversation_thread(thread_id) is None:
+            raise ValueError("unknown conversation thread")
+        self._session_id = thread_id
 
     async def close(self) -> None:
         if self._closed:
@@ -311,8 +363,19 @@ class VoiceSession:
         self._arm_watchdog(event.generation_id)
 
     def _record_speech_end(self, generation_id: int, event: UtteranceCaptured) -> None:
-        trailing_seconds = event.trailing_silence_frames / event.audio.sample_rate
-        self._speech_end_at[generation_id] = self._monotonic() - trailing_seconds
+        # Prefer the capture clock. Subtracting the trailing silence from "now"
+        # silently adds however far the pipeline trails the microphone to the
+        # start of the end-to-end measurement, which can only make the reported
+        # latency shorter than it really was.
+        captured_at = (
+            None
+            if self._sample_clock is None
+            else self._sample_clock.wall_time_of_sample(event.last_voiced_sample)
+        )
+        if captured_at is None:
+            trailing_seconds = event.trailing_silence_frames / event.audio.sample_rate
+            captured_at = self._monotonic() - trailing_seconds
+        self._speech_end_at[generation_id] = captured_at
         if len(self._speech_end_at) > 128:
             for stale in sorted(self._speech_end_at)[:-128]:
                 self._speech_end_at.pop(stale, None)
@@ -346,7 +409,14 @@ class VoiceSession:
         del reason
         await self._coordinator.cancel("device_changed")
 
-    async def _run_turn(self, transcript: FinalTranscript) -> None:
+    def _schedule_turn(self, transcript: FinalTranscript, *, speak_text: bool) -> None:
+        task = asyncio.create_task(
+            self._run_turn(transcript, speak_text=speak_text), name="lune-turn"
+        )
+        self._turn_tasks.add(task)
+        task.add_done_callback(self._turn_tasks.discard)
+
+    async def _run_turn(self, transcript: FinalTranscript, *, speak_text: bool) -> None:
         generation_id = transcript.generation_id
         text = transcript.text.strip()
         if not text or not self._coordinator.is_current(generation_id):
@@ -354,12 +424,27 @@ class VoiceSession:
             return
         turn_id = self._store.begin_turn(self._session_id, generation_id)
         self._store.accept_user_transcript(turn_id, text)
-        turn = _ActiveTurn(generation_id, turn_id, ToolCallValidator())
+        turn = _ActiveTurn(generation_id, turn_id, ToolCallValidator(), speak_text)
         turn.validator.begin_turn(0)
         self._active_turn = turn
         self._set_state("thinking", generation_id)
         try:
             result = await self._generate(turn, text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # An unexpected provider fault still has to finish the turn. Without
+            # this the task dies with its exception unretrieved, the turn row
+            # stays pending, no report is written, and the session sits in
+            # `thinking` for an answer that will never arrive, so the microphone
+            # keeps demanding the 300 ms barge-in threshold.
+            self._emit(event="generation_failed", generation_id=generation_id)
+            result = GenerationResult(
+                status="error",
+                models_attempted=(),
+                sentences_emitted=0,
+                error_code="provider_error",
+            )
         finally:
             if self._active_turn is turn:
                 self._active_turn = None
@@ -460,7 +545,24 @@ class VoiceSession:
             self._handle_tool_call(turn, frame)
             return
         if isinstance(frame, GenerationLLMTextFrame):
-            await self._speak(turn, frame.text)
+            if turn.speak_text:
+                await self._speak(turn, frame.text)
+            else:
+                self._deliver_text(turn, frame.text)
+
+    def _deliver_text(self, turn: _ActiveTurn, text: str) -> None:
+        """Commit a complete text sentence without pretending it was spoken."""
+
+        sentence = text.strip()
+        if not sentence or not self._coordinator.is_current(turn.generation_id):
+            return
+        try:
+            self._store.append_assistant_text_delivery(turn.turn_id, sentence)
+        except ValueError:
+            turn.failed = True
+            return
+        turn.spoke = True
+        turn.played_sentences += 1
 
     def _handle_tool_call(self, turn: _ActiveTurn, frame: GenerationFunctionCallFrame) -> None:
         arguments = frame.arguments

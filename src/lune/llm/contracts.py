@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Final, Literal
 
 from pipecat.frames.frames import Frame, FunctionCallInProgressFrame, LLMTextFrame, SystemFrame
 
-type ModelName = Literal["gpt-5.6-terra", "gpt-5.6-luna"]
-type ProviderName = Literal["openai_responses", "deterministic_fake"]
+type ModelName = Literal["gpt-5.6-terra", "gpt-5.6-luna", "qwen3.5-4b-q4-local"]
+type ProviderName = Literal["openai_responses", "deterministic_fake", "local_qwen"]
+
+LOCAL_MODEL_NAME: Final[ModelName] = "qwen3.5-4b-q4-local"
+"""The on-device Qwen attempt. Free, offline, and never billed to the cloud ledger."""
+
 type TerminalStatus = Literal["completed", "failed", "incomplete", "cancelled"]
 type ProviderErrorCode = Literal[
     "busy",

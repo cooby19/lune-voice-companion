@@ -40,6 +40,60 @@ class UnsafeAudioOutputError(CoreAudioDeviceError):
     """Playback was refused because the selected output is built in."""
 
 
+class MicrophonePermissionError(CoreAudioDeviceError):
+    """macOS did not grant microphone capture permission in bounded time."""
+
+
+class MicrophoneAuthorizer(Protocol):
+    async def authorize(self) -> None: ...
+
+
+class NativeMicrophoneAuthorizer:
+    """Request TCC access on the main asyncio thread before PortAudio opens."""
+
+    def __init__(self, avfoundation: Any | None = None, *, timeout_s: float = 30.0) -> None:
+        if timeout_s <= 0:
+            raise ValueError("microphone authorization timeout must be positive")
+        self._avfoundation = avfoundation
+        self._timeout_s = timeout_s
+
+    async def authorize(self) -> None:
+        av = self._avfoundation
+        if av is None:
+            try:
+                import AVFoundation  # type: ignore[import-untyped]
+            except ImportError as error:  # pragma: no cover - required on supported macOS
+                raise MicrophonePermissionError("microphone_authorization_unavailable") from error
+            av = AVFoundation
+            self._avfoundation = av
+        status = int(av.AVCaptureDevice.authorizationStatusForMediaType_(av.AVMediaTypeAudio))
+        if status == int(av.AVAuthorizationStatusAuthorized):
+            return
+        if status != int(av.AVAuthorizationStatusNotDetermined):
+            raise MicrophonePermissionError("microphone_permission_denied")
+
+        loop = asyncio.get_running_loop()
+        decision: asyncio.Future[bool] = loop.create_future()
+
+        def complete(granted: bool) -> None:
+            def resolve() -> None:
+                if not decision.done():
+                    decision.set_result(bool(granted))
+
+            loop.call_soon_threadsafe(resolve)
+
+        av.AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+            av.AVMediaTypeAudio,
+            complete,
+        )
+        try:
+            granted = await asyncio.wait_for(decision, timeout=self._timeout_s)
+        except TimeoutError as error:
+            raise MicrophonePermissionError("microphone_permission_timeout") from error
+        if not granted:
+            raise MicrophonePermissionError("microphone_permission_denied")
+
+
 class _AudioObjectPropertyAddress(ctypes.Structure):
     _fields_ = (
         ("mSelector", ctypes.c_uint32),
@@ -163,6 +217,20 @@ class StreamOwnerHealth:
 
 
 @dataclass(frozen=True, slots=True)
+class StreamOwnerStatus:
+    """Sanitized lifecycle and format evidence without device names or IDs."""
+
+    closed: bool
+    host_active: bool
+    input_open: bool
+    output_open: bool
+    input_sample_rate: int | None
+    input_channels: int | None
+    output_sample_rate: int | None
+    output_channels: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class _ResolvedDevices:
     snapshot: DeviceSnapshot
     input_index: int
@@ -186,6 +254,7 @@ class CoreAudioStreamOwner:
         output_block_ms: int = 20,
         portaudio_factory: PortAudioFactory = _load_portaudio,
         properties: CoreAudioPropertyReader | None = None,
+        microphone_authorizer: MicrophoneAuthorizer | None = None,
     ) -> None:
         if frames_per_buffer <= 0 or output_block_ms <= 0:
             raise ValueError("audio buffer settings must be positive")
@@ -194,6 +263,7 @@ class CoreAudioStreamOwner:
         self._output_block_ms = output_block_ms
         self._portaudio_factory = portaudio_factory
         self._properties = properties
+        self._microphone_authorizer = microphone_authorizer
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lune-coreaudio")
         self._bindings: PortAudioBindings | None = None
         self._resolved: _ResolvedDevices | None = None
@@ -215,7 +285,32 @@ class CoreAudioStreamOwner:
         await self._run(self._rebuild_sync, snapshot)
 
     async def set_microphone(self, enabled: bool) -> None:
+        if enabled:
+            resolved = self._resolved
+            if resolved is None:
+                raise CoreAudioDeviceError("default_devices_unresolved")
+            if resolved.snapshot.output.is_builtin:
+                raise UnsafeAudioOutputError("unsafe_output")
+            authorizer = self._microphone_authorizer
+            if authorizer is None:
+                authorizer = NativeMicrophoneAuthorizer()
+                self._microphone_authorizer = authorizer
+            await authorizer.authorize()
         await self._run(self._set_microphone_sync, enabled)
+
+    async def request_microphone_access(self) -> None:
+        """Request only TCC permission; leave the PortAudio input closed.
+
+        The caller invokes this in response to an explicit UI action.  Keeping
+        it separate from :meth:`set_microphone` prevents onboarding from
+        silently beginning a call after the user approves the macOS prompt.
+        """
+
+        authorizer = self._microphone_authorizer
+        if authorizer is None:
+            authorizer = NativeMicrophoneAuthorizer()
+            self._microphone_authorizer = authorizer
+        await authorizer.authorize()
 
     async def write(self, chunk: PCMChunk) -> None:
         try:
@@ -250,6 +345,20 @@ class CoreAudioStreamOwner:
         self._input_failed.clear()
         self._output_failed.clear()
         return health
+
+    def status(self) -> StreamOwnerStatus:
+        output_rate, output_channels = self._output_format or (None, None)
+        input_open = self._input_stream is not None
+        return StreamOwnerStatus(
+            closed=self._closed,
+            host_active=self._bindings is not None,
+            input_open=input_open,
+            output_open=self._output_stream is not None,
+            input_sample_rate=self._transport.sample_rate if input_open else None,
+            input_channels=self._transport.channels if input_open else None,
+            output_sample_rate=output_rate,
+            output_channels=output_channels,
+        )
 
     async def _run(
         self,
@@ -393,10 +502,14 @@ class CoreAudioStreamOwner:
                 if self._flush_requested.is_set():
                     break
                 block = chunk.data[offset : offset + block_bytes]
+                # An underflow means the device consumed faster than this
+                # writer could refill it, which is a glitch, not a dead stream.
+                # Raising on it made a busy machine tear down output mid-answer
+                # and cancel the turn; real device faults still raise here.
                 stream.write(
                     block,
                     num_frames=len(block) // bytes_per_frame,
-                    exception_on_underflow=True,
+                    exception_on_underflow=False,
                 )
         except Exception as error:
             self._close_output_sync()

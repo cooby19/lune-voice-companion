@@ -39,6 +39,11 @@ Application Support 中的私人副本。
 
 ## OpenAI API 設定
 
+> **測試階段可略過本節。** `config.toml` 的 `models.provider` 預設為 `local_qwen`，
+> 對話完全在本機推論：不需要 API key、不連網、不產生費用，`lune` 也不會要求 Keychain。
+> 需要雲端時把 `provider` 改成 `"openai_responses"` 再依下列步驟設定。決策背景見
+> `docs/project-decisions.md` 的「測試階段的 LLM 組成」。
+
 1. 登入 [OpenAI API Platform](https://platform.openai.com/)，建立或選擇組織下的
    Project，並設定計費與 Project 支出上限。
 2. 前往 [API keys 頁面](https://platform.openai.com/api-keys)建立 secret key。

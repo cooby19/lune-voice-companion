@@ -3,7 +3,10 @@
 from lune.audio.coreaudio import (
     CoreAudioDeviceError,
     CoreAudioStreamOwner,
+    MicrophonePermissionError,
+    NativeMicrophoneAuthorizer,
     StreamOwnerHealth,
+    StreamOwnerStatus,
     UnsafeAudioOutputError,
 )
 from lune.audio.devices import DeviceInfo, DeviceSnapshot, DeviceStateMachine
@@ -21,10 +24,13 @@ __all__ = [
     "DeviceSnapshot",
     "DeviceStateMachine",
     "LocalAudioTransport",
+    "MicrophonePermissionError",
+    "NativeMicrophoneAuthorizer",
     "PreRollBuffer",
     "PreRollCapture",
     "SileroVoiceDetector",
     "StreamOwnerHealth",
+    "StreamOwnerStatus",
     "TurnEvent",
     "TurnEventKind",
     "TurnPolicy",

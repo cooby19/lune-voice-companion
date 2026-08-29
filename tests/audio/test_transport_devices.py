@@ -3,6 +3,8 @@ from __future__ import annotations
 import queue
 import threading
 
+import pytest
+
 from lune.audio.devices import DeviceInfo, DeviceSnapshot, DeviceStateMachine
 from lune.audio.transport import LocalAudioTransport
 from lune.audio.types import AudioSpan
@@ -118,3 +120,23 @@ async def test_unchanged_devices_do_not_cancel_or_rebuild() -> None:
     transition = await state.apply_default_devices(snapshot)
     assert not transition.changed
     assert calls == []
+
+
+def test_a_captured_sample_maps_back_to_when_the_device_delivered_it() -> None:
+    clock = iter([10.0, 10.032, 10.064])
+    transport = LocalAudioTransport(sample_rate=16_000, monotonic=lambda: next(clock))
+    transport.set_microphone(True)
+    window = bytes(512 * 2)
+
+    assert transport.wall_time_of_sample(0) is None
+    transport.audio_callback(window)
+    transport.audio_callback(window)
+
+    # The second callback ends at sample 1024 and arrived at 10.032, so sample
+    # 512 was captured 32 ms earlier. Processing time never enters this.
+    assert transport.wall_time_of_sample(1_024) == pytest.approx(10.032)
+    assert transport.wall_time_of_sample(512) == pytest.approx(10.0)
+    assert transport.wall_time_of_sample(0) == pytest.approx(9.968)
+
+    transport.rebuild(generation_id=1)
+    assert transport.wall_time_of_sample(0) is None

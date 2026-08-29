@@ -243,8 +243,11 @@ def test_real_adapter_passes_normalized_pcm_and_only_a_local_model_path(
     options = captured["options"]
     assert isinstance(audio, np.ndarray)
     np.testing.assert_allclose(audio, np.array([-1.0, 0.0, 32767 / 32768], dtype=np.float32))
+    # One retry, not upstream's ladder to 1.0: a low-confidence decode of real
+    # microphone audio was measured at 6.6-10.3 s, past the 10 s watchdog.
     assert options == {
         "path_or_hf_repo": str(tmp_path),
         "verbose": None,
+        "temperature": (0.0, 0.2),
         "language": "zh",
     }

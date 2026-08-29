@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from lune.audio.types import BYTES_PER_SAMPLE, AudioSpan
@@ -25,9 +27,11 @@ class LocalAudioTransport:
         sample_rate: int = 16_000,
         channels: int = 1,
         max_callbacks: int = 32,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if sample_rate <= 0 or channels <= 0 or max_callbacks <= 0:
             raise ValueError("invalid transport settings")
+        self._monotonic = monotonic
         self.sample_rate = sample_rate
         self.channels = channels
         self._queue: queue.Queue[AudioSpan] = queue.Queue(maxsize=max_callbacks)
@@ -36,6 +40,7 @@ class LocalAudioTransport:
         self._generation_id = 0
         self._overflowed = threading.Event()
         self._dropped_callbacks = 0
+        self._anchor: tuple[int, float] | None = None
         self._state_lock = threading.Lock()
 
     @property
@@ -62,9 +67,14 @@ class LocalAudioTransport:
             return False
         frame_count = len(pcm) // bytes_per_frame
         pcm_copy = bytes(pcm)
+        # Stamp arrival before any queueing: the callback fires once the driver
+        # has captured this buffer, so it is the only place where a sample
+        # offset can still be tied to wall-clock time.
+        arrived_at = self._monotonic()
         with self._state_lock:
             start = self._sample_cursor
             self._sample_cursor += frame_count
+            self._anchor = (self._sample_cursor, arrived_at)
             if not self._microphone_enabled:
                 return True
             span = AudioSpan(
@@ -98,6 +108,22 @@ class LocalAudioTransport:
             dropped_callbacks=dropped_callbacks,
         )
 
+    def wall_time_of_sample(self, sample: int) -> float | None:
+        """Map an absolute sample offset back to when the microphone captured it.
+
+        The end-to-end clock starts at the last voiced *sample*, so it cannot be
+        derived from processing time: whenever the pipeline trails the device,
+        a processing-time estimate lands after the speech really ended and makes
+        the measured latency look shorter than it was.
+        """
+
+        with self._state_lock:
+            anchor = self._anchor
+        if anchor is None:
+            return None
+        anchor_sample, anchor_time = anchor
+        return anchor_time - (anchor_sample - sample) / self.sample_rate
+
     def mark_discontinuity(self) -> None:
         """Flag a PortAudio status/format discontinuity for lifecycle recovery."""
 
@@ -113,4 +139,5 @@ class LocalAudioTransport:
             self._sample_cursor = 0
             self._generation_id = generation_id
             self._dropped_callbacks = 0
+            self._anchor = None
             self._overflowed.clear()

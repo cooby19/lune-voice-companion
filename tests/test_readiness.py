@@ -9,10 +9,19 @@ from lune.paths import LunePaths
 from lune.readiness import check_readiness
 
 
+def write_config(paths: LunePaths, provider: str) -> None:
+    paths.config.parent.mkdir(parents=True, exist_ok=True)
+    paths.config.write_text(
+        f'schema_version = 1\n[models]\nprovider = "{provider}"\n',
+        encoding="utf-8",
+    )
+
+
 def test_keychain_failure_is_setup_required(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     paths = LunePaths(support=tmp_path / "support", logs=tmp_path / "logs")
+    write_config(paths, "openai_responses")
 
     def fail() -> str | None:
         raise keyring.errors.KeyringError("locked")
@@ -21,3 +30,30 @@ def test_keychain_failure_is_setup_required(
     readiness = check_readiness(paths)
     assert readiness.state == "setup_required"
     assert "keychain_unavailable" in readiness.reasons
+
+
+def test_the_on_device_composition_asks_for_the_artifact_not_a_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paths = LunePaths(support=tmp_path / "support", logs=tmp_path / "logs")
+    write_config(paths, "local_qwen")
+
+    def fail() -> str | None:
+        raise AssertionError("the on-device composition must never read the Keychain")
+
+    monkeypatch.setattr("lune.readiness.get_openai_api_key", fail)
+    readiness = check_readiness(paths)
+
+    assert readiness.state == "setup_required"
+    assert "api_key_missing" not in readiness.reasons
+    assert "local_llm_model_missing" in readiness.reasons
+    assert "local_llm_runtime_missing" in readiness.reasons
+
+
+def test_missing_config_is_created_before_setup_reasons_are_reported(tmp_path: Path) -> None:
+    paths = LunePaths(support=tmp_path / "support", logs=tmp_path / "logs")
+
+    readiness = check_readiness(paths)
+
+    assert paths.config.is_file()
+    assert "config_missing" not in readiness.reasons

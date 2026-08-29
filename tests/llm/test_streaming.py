@@ -1,5 +1,6 @@
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 
@@ -160,7 +161,7 @@ async def test_error_after_playback_does_not_retry_and_uses_local_prompt() -> No
 
     assert result.status == "error"
     assert result.models_attempted == ("gpt-5.6-terra",)
-    assert _text_output(emitted) == "已播放一句。 抱歉\uff0c雲端回覆暫時中斷了。"
+    assert _text_output(emitted) == "已播放一句。 抱歉\uff0c回覆暫時中斷了。"
     assert ledger.settled_attempts[0].estimated
 
 
@@ -250,3 +251,55 @@ def _sink(
 
 def _text_output(frames: list[ProviderStreamFrame]) -> str:
     return "".join(frame.text for frame in frames if isinstance(frame, GenerationLLMTextFrame))
+
+
+@pytest.mark.asyncio
+async def test_a_pinned_primary_never_selects_or_retries_a_cloud_tier() -> None:
+    local = ScriptedAttemptProvider(
+        "qwen3.5-4b-q4-local",
+        scripts=((text("在。"), usage(), terminal("failed", transient=True)),),
+    )
+    emitted: list[ProviderStreamFrame] = []
+    # A month already past the fallback threshold would push Terra to Luna; a
+    # pinned primary must not consult that logic at all.
+    ledger = BudgetLedger(confirmed_twd={"2026-08": Decimal("800")})
+    generator = ConversationGenerator(
+        providers={"qwen3.5-4b-q4-local": local},
+        ledger=ledger,
+        current_generation=lambda: 9,
+        emit=_sink(emitted),
+        primary_model="qwen3.5-4b-q4-local",
+    )
+
+    result = await generator.generate(
+        generation_id=9,
+        context=CONTEXT,
+        at=NOW,
+        max_input_tokens=8_000,
+    )
+
+    assert result.models_attempted == ("qwen3.5-4b-q4-local",)
+    assert ledger.total_with_reservations(NOW) == Decimal("800")
+
+
+@pytest.mark.asyncio
+async def test_a_repeating_script_survives_more_attempts_than_it_was_given() -> None:
+    provider = ScriptedAttemptProvider(
+        "gpt-5.6-terra",
+        scripts=((text("嗨。"), terminal()),),
+        repeat_last=True,
+    )
+
+    for attempt in ("attempt-1", "attempt-2", "attempt-3"):
+        frames = [
+            frame
+            async for frame in provider.stream(
+                generation_id=0,
+                attempt_id=attempt,
+                context=CONTEXT,
+            )
+        ]
+        assert [type(frame).__name__ for frame in frames] == [
+            "GenerationLLMTextFrame",
+            "ProviderTerminalFrame",
+        ]

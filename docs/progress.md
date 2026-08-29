@@ -14,7 +14,9 @@
 | M6 前置：本地 LLM spike | 完成（gate 已執行，效能未通過） | 102 項 spike tests／328 項完整 pytest；串流 `<think>` 濾除與違規記錄、pin 未建立即 fail-closed 的模型 manifest、loopback-only endpoint 政策、runtime 候選成本表、由端到端預算推導的首句延遲門檻、RSS／swap／queue 累積偵測、工具呼叫 schema 與每 turn 限額、取消證據與 `remote_cancel` 誠實標示、淨化報告；未安裝 runtime、未下載模型、未讀取私人 persona；[commit `c0a348e`](https://github.com/cooby19/lune-voice-companion/commit/c0a348ee14142b8a292240fa729c8659b09d0941)；[CI #33093928857](https://github.com/cooby19/lune-voice-companion/actions/runs/33093928857) |
 | M6 | 完成（公開 gate）；端到端 benchmark 未執行 | 81 項新測試／447 項完整 pytest；唯一 `GenerationCoordinator`、barge-in carry-over turn gate、Pipecat provider bridge、bounded playback fence、STT watchdog、工具提案兩階段提交與 benchmark gate 邏輯；30 輪暖機端到端 benchmark 與實體音訊 gate 未執行；[commit `de561f8`](https://github.com/cooby19/lune-voice-companion/commit/de561f8b848c64f3b3f11d162cf6c3c5a0ae3466)；[CI #33179142684](https://github.com/cooby19/lune-voice-companion/actions/runs/33179142684)；AVSpeech run loop 修正 [commit `ad353e6`](https://github.com/cooby19/lune-voice-companion/commit/ad353e6)；[CI #33185129924](https://github.com/cooby19/lune-voice-companion/actions/runs/33185129924) |
 | M7 前半：最小實體語音垂直切片 | 完成（公開 gate）；實體 gate 待授權 | 真正的 PyAudio／CoreAudio input owner 與 `AudioOutputDevice`、engine 唯一管線組裝、mic-off／unsafe-output policy、裝置監看與完整關閉；56 項 targeted tests／459 項完整 pytest；未開啟裝置、未讀取私人資料、未載入本機模型、未發出雲端請求 |
-| M7 後半 | 待處理 | rumps、authenticated IPC 與 py2app 打包 |
+| M7 第三階段：本機 LLM provider | 完成（公開 gate）；實體 gate 未執行 | `local_qwen` 進入 release registry 並成為測試階段預設；Pipecat `LLMService` 包住既有隔離 worker，串流 token、`<think>` 濾除、`<tool_call>` 抽取、零價 ledger 記帳與 pinned primary；19 項新測試／478 項完整 pytest；未載入權重、未開啟裝置、未發出雲端請求 |
+| M7 第二階段：無雲端實體 smoke | 部分執行 | 已授權並在目標 Mac 執行：冷啟動 mic-off、耳機辨識、麥克風開啟、**一次完整實體 turn**（端到端 2,664.7 ms，門檻 p50 ≤1.5 s 未通過）、關閉後無殘留；插話 200 ms 與裝置切換未執行；期間修正五項缺陷；486 項完整 pytest |
+| M7 後半：桌面殼與 authenticated IPC | 部分完成（公開 gate）；實體與打包 gate 未執行 | loopback WebSocket IPC（一次性 token、protocol 版本、訊息上限、單一 client）、`lune-engine --ui-ipc` 引擎子行程與一行私人 handoff、`UiRuntime` 命令與 snapshot 契約、pywebview 視窗殼與內嵌 Web UI；519 項完整 pytest；rumps 依 `docs/ui-spec.md` 放棄，py2app 只更新設定、實際打包與簽署未執行 |
 | M8 | 待處理 | Keychain、簽署、soak／隱私／release gate |
 
 ## 驗收原則
@@ -81,8 +83,9 @@
 - persona rubric 未通過的兩題為自動關鍵字判準未命中，尚未經人工複核，不等於模型確實
   違規；rubric 題目與回覆依規定不進公開 repo 或診斷。
 - 依 `project-decisions.md`，4B Q4 未通過延遲 gate 即視為本地即時路徑在此硬體上不成立。
-  是否改採 hybrid、維持 OpenAI 或退到更小尺寸是新的產品決策，尚未決定，不得自行降低門檻
-  或靜默切換。
+  該產品決策已於 2026-08-29 由使用者做出：`docs/ui-spec.md` 定案為 hybrid，而測試階段先以
+  本機為唯一 provider、雲端延後。首句延遲門檻是**明示豁免**而非降低，數值與本節的失敗
+  證據都原樣保留。
 - M6 的公開 gate 全部使用 deterministic fake：fake VAD 分類器、fake STT、scripted provider、
   scripted TTS backend 與 recording output device。沒有開啟麥克風或輸出裝置，沒有載入 Whisper、
   E5 或任何 LLM 權重，也沒有發出雲端請求。
@@ -144,6 +147,79 @@
   避免把未播放的 assistant 內容誤寫入 SQLite。
 - M7 前半的**實體硬體 gate 尚未執行**：麥克風權限、取樣率／channel mapping、一次完整對話、
   插話 200 ms、裝置拔除／切換、內建喇叭暫停與退出後無殘留資源，都等待使用者分項授權。
+- M7 第三階段依 2026-08-29 的決策接上本機 provider：`LocalQwenLLMService` 把既有隔離 worker
+  包成一般 Pipecat `LLMService`，因此 generation fence、三句 gate、兩階段工具提案與 cancel／drain
+  都沿用原路徑，`build_voice_pipeline` 沒有為它另開分支。
+- 本機組成沒有第二層可退，因此 primary 是釘死的：ledger 不會為只有一個 provider 的組成去
+  選 Terra 或 Luna。本機 attempt 價格為零，且零價預留不受雲端鎖定阻擋——這正是 ui-spec 說的
+  「本機備援使 `budget_locked` 從死路變成分岔」。
+- `remote_cancel` 對 `local_qwen` 宣告為 false。host 仍會終止自己 spawn 的 PID，但 spike 無法在
+  每次試驗都證明 cancel 先於自然結束抵達，因此不宣告。
+- `check_readiness` 改為依 `models.provider` 判斷：本機組成不讀 Keychain，改為要求已 pin 的
+  模型 manifest 與 worker runtime 存在。
+- **本機 provider 的實體 gate 未執行**：載入真實權重、實測首句延遲、實測取消是否停住本機推論、
+  以及與麥克風／輸出裝置串起來的端到端行為，都還沒跑過。上述證據全部來自公開 CI 級測試。
+## M7 第二階段：實體 smoke 的實測（2026-08-29，目標 MacBook Air M4／16GB）
+
+已於使用者分項授權後執行：麥克風、耳機／實體輸出、本機 Whisper／E5、本地 LLM，之後另行取得
+私人 `config.toml`／`persona/kernel.yaml` 的讀取授權。全程離線、無雲端請求、無 API key。
+證據只保留數值與狀態碼，沒有音訊、逐字稿或私人路徑。
+
+### 已通過
+
+| 項目 | 實測 |
+|---|---|
+| 冷啟動狀態 | `mic_off`，麥克風關閉，輸出非內建 |
+| 麥克風開啟 | 16 kHz mono，`input_open=true`，狀態 `listening` |
+| 一次完整 turn | `completed`，播出 1 句，`degraded_tts=false` |
+| 輸出裝置 | 22,050 Hz mono（AVSpeech 原生取樣率） |
+| 取消／溢位／stream 失敗 | 全部 0 |
+| 關閉後 | 0 child process、0 殘留 asyncio task、input／output 皆關閉 |
+| 真實 provider 啟動 | `lune-engine --microphone` 以 `local_qwen` 組成抵達 `listening`（載入權重、人格、Whisper、E5、AVSpeech） |
+
+### 未通過與未執行
+
+| 項目 | 門檻 | 實測 | 判定 |
+|---|---|---|---|
+| 端到端（最後 voiced sample → 第一個非靜音輸出） | p50 ≤1,500 ms | 2,664.7 ms | 未通過 |
+| Whisper final（2,908 ms 音訊、單次解碼） | 記錄用 | 1,878.6 ms | 記錄 |
+| 插話 200 ms | ≤200 ms | — | 未執行 |
+| 裝置切換／拔除 | — | — | 未執行 |
+| 30 輪暖機 benchmark | p50 ≤1.5 s、p95 ≤2.2 s | — | 未執行 |
+
+端到端 2,664.7 ms 的組成為句尾靜音 350 ms + Whisper 1,878.6 ms + scripted LLM（約 0）+ AVSpeech
+TTFA。與既有拆解一致：瓶頸是 Whisper 的固定 30 秒 mel window，不是 LLM。門檻與失敗證據原樣保留。
+
+### 量測環境的影響（必須與數字一併引用）
+
+低電量模式開啟且 load average 約 4.9 時，同一份合成語料、同一版 `mlx` 0.32.2／`mlx-whisper`
+0.4.3，Whisper 暖狀態需 6,676–7,290 ms；關閉低電量模式並降到 load 2.45 後為 1,826–1,889 ms。
+**3.6 倍差距完全來自機器狀態**，與 Lune 的程式無關。任何延遲數字都必須註明當時的電源模式與負載。
+
+### 本階段修正的五項缺陷
+
+1. `PlaybackSink` 容量 32 對上 AVSpeech 的爆發式輸出（實測一句 2 秒中文送出 172 個 chunk、
+   22,050 Hz），release 預設語音路徑每一輪都以 `output_overflow` 被取消。已改為 512，與 M6
+   對 adapter queue 的處置同一理由與同一數值。
+2. `_run_turn` 未包住 provider 的非預期例外：turn task 靜默死亡、DB turn 停在 pending、
+   沒有 report，session 卡在 `thinking`。現在收斂為 `provider_error` 結果並回到可聆聽狀態。
+3. input overflow 一律取消 generation，使慢推論自我毀滅——推論餓死 PyAudio callback，
+   overflow 取消掉推論正在餵養的那個 generation。已改為只有進行中的 utterance 才取消。
+4. `exception_on_underflow=True` 把正常的輸出 underflow 當成致命錯誤（實測一次插話情境出現
+   3 次 `output_stream_failures`、2 次 `stream_error`）。underflow 現在視為抖動，真實裝置錯誤
+   仍然拋出。
+5. 端到端時鐘由處理時間推導：`speech_end_at` 取「擷取當下的 `monotonic()` 減句尾靜音」，
+   管線落後多少就把端到端低估多少（實測輸入落後 241.8 ms、峰值 595 ms；某次量得 1,525 ms
+   小於同一輪的 STT 2,463 ms 而露餡）。已改為由 transport 的取樣時間錨點反推最後 voiced
+   sample 的擷取時刻，符合計畫既有的端到端定義。
+
+### Whisper 解碼重試（2026-08-29 由使用者決定）
+
+真實麥克風收音的短片段常使 `avg_logprob` 落在 −1.7 至 −4.2，upstream 預設會沿
+0.2→0.4→…→1.0 重試最多六趟：實測溫度 `0.0` 時延遲 1,842–1,889 ms，溫度 `1.0` 時
+6,605–10,271 ms，直接撞破 10 秒 STT watchdog 並使下一句排隊。使用者選擇**只保留一次重試**
+（`(0.0, 0.2)`）。此設定會影響尚未執行的 M2 正規化準確率 gate，屆時須一併重測。
+
 - 硬體與私人模型報告只在本機產生；除非先完成淨化，否則不進版控。
 - 每個里程碑必須先通過該階段 gate、更新本文件、建立可回退 commit 並 push，才進入下一階段。
 
@@ -155,11 +231,23 @@ M5 私人 GPT 模型／效能 gate，以及 M6 的 30 輪端到端 benchmark 與
 AVSpeech 的 run loop 需求已於 2026-08-28 實測完畢並據此修正實作。
 
 本地 LLM spike 的結論是：`Qwen3.5-4B` Q4 在此硬體上行為正確、資源充裕，但首句延遲無法
-滿足既有端到端門檻。M6 的 LLM provider 因此仍是 `openai_responses`；`PipecatAttemptProvider`
-以 Pipecat frame 契約為介面，換成別的 provider 不需要改動 pipeline。等待使用者就 hybrid、
-維持 OpenAI 或改用更小模型做出新的產品決策後，才能固定最終組成。
+滿足既有端到端門檻。`PipecatAttemptProvider` 以 Pipecat frame 契約為介面，換成別的 provider
+不需要改動 pipeline。使用者已於 2026-08-29 做出決策：長期組成為 hybrid（`docs/ui-spec.md`），
+測試階段則先以本機 `Qwen3.5-4B` Q4 為唯一 provider、雲端延後規劃，首句延遲門檻於該階段
+明示豁免。詳見 `project-decisions.md` 的「測試階段的 LLM 組成」。
 
 M7 前半已完成公開可重現的 engine／stream adapter 與唯一管線接線。下一步必須先取得四項獨立
 授權，才可執行無雲端實體 smoke test：麥克風、耳機／實體輸出、本機 Whisper／E5、本地 LLM。
-在該 gate 前不讀取私人設定、模型或裝置內容。rumps、authenticated IPC 與 py2app 仍屬 M7 後半，
-本次沒有提前實作。
+在該 gate 前不讀取私人設定、模型或裝置內容。
+
+M7 後半已不再是待處理：**rumps 依 `docs/ui-spec.md` 放棄**，產品形態改為左側邊欄的視窗
+應用程式，`setup.py` 的 `LSUIElement` 已改為 `False`。**authenticated IPC 已實作**——
+`src/lune/ipc/` 是只綁 `127.0.0.1:0`、一次性 token、單一 client 的 loopback WebSocket server，
+`lune-engine --ui-ipc`（`run_ui_ipc`）是它的引擎端 host，唯一的 stdout 輸出是給 pywebview 父
+行程的一行 handshake；`src/lune/ui/` 則是 `UiRuntime` 命令／snapshot 契約、pywebview 殼與內嵌
+Web UI。**py2app 仍未完成**：`setup.py` 已改成視窗應用程式的薄打包設定，但實際 `.app` 打包、
+簽署與 bundle 內的路徑驗證都還沒執行，連同 Keychain 與 soak／隱私／release gate 一起留在 M8。
+
+上述證據全部來自公開 CI 級測試（519 項完整 pytest，deterministic fake engine 與 loopback
+socket）。**桌面殼的實機 gate 未執行**：沒有真的開過 pywebview 視窗、沒有量過殼與引擎的
+啟動與關閉時序，也沒有驗證過視窗關閉後引擎子行程確實回收。

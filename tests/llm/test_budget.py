@@ -115,3 +115,41 @@ def test_budget_requires_aware_timestamps() -> None:
             max_input_tokens=100,
             max_output_tokens=10,
         )
+
+
+def test_a_local_attempt_costs_nothing_and_settles_at_zero() -> None:
+    ledger = BudgetLedger()
+    reservation = ledger.reserve_model(
+        at=NOW,
+        model="qwen3.5-4b-q4-local",
+        max_input_tokens=8_000,
+        max_output_tokens=192,
+    )
+    assert reservation.reserved_twd == Decimal(0)
+
+    settled = ledger.settle(
+        reservation.attempt_id,
+        AttemptUsageFrame(
+            generation_id=1,
+            attempt_id=reservation.attempt_id,
+            input_tokens=8_000,
+            output_tokens=192,
+        ),
+    )
+    assert settled.charged_twd == Decimal(0)
+    assert ledger.total_with_reservations(NOW) == Decimal(0)
+
+
+def test_the_cloud_lock_does_not_block_a_free_local_attempt() -> None:
+    ledger = BudgetLedger(confirmed_twd={"2026-08": Decimal("950")})
+
+    with pytest.raises(BudgetLocked):
+        ledger.reserve_conversation(at=NOW, max_input_tokens=8_000, max_output_tokens=192)
+
+    reservation = ledger.reserve_model(
+        at=NOW,
+        model="qwen3.5-4b-q4-local",
+        max_input_tokens=8_000,
+        max_output_tokens=192,
+    )
+    assert reservation.model == "qwen3.5-4b-q4-local"

@@ -187,6 +187,7 @@ def build_harness(
     ledger: BudgetLedger | None = None,
     playback_capacity: int = 32,
     stt_timeout_s: float = 10.0,
+    sample_clock: object | None = None,
 ) -> Harness:
     from tests.pipeline.conftest import RecordingOutputDevice
 
@@ -224,6 +225,7 @@ def build_harness(
         provider_fences=(fence,),
         playback_capacity=playback_capacity,
         stt_timeout_s=stt_timeout_s,
+        sample_clock=sample_clock,  # type: ignore[arg-type]
     )
     return Harness(
         pipeline=pipeline,

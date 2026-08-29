@@ -1,35 +1,24 @@
-"""Thin rumps menu application entry point."""
+"""Desktop application entry point, kept separate from the voice engine child."""
 
 from __future__ import annotations
 
-from typing import Any
-
-from lune.paths import LunePaths
-from lune.readiness import check_readiness
+import sys
 
 
-def menu_title() -> str:
-    readiness = check_readiness(LunePaths.defaults())
-    return "Lune · Setup Required" if readiness.state == "setup_required" else "Lune · Mic Off"
+def main(argv: list[str] | None = None) -> int:
+    """Run the native window shell, preserving the explicit physical-smoke route."""
 
+    arguments = sys.argv[1:] if argv is None else argv
+    if arguments[:1] == ["--physical-smoke"]:
+        from lune.physical_smoke import main as physical_smoke_main
 
-def main() -> int:
-    try:
-        import rumps  # type: ignore[import-untyped]
-    except ImportError:
-        return 3
+        return physical_smoke_main(arguments[1:])
 
-    class LuneMenu(rumps.App):  # type: ignore[misc]
-        def __init__(self) -> None:
-            super().__init__(menu_title(), quit_button="Quit Lune")
+    # Importing the desktop module does not import pywebview until it is needed,
+    # so normal package checks and the physical smoke command stay GUI-free.
+    from lune.ui.desktop import run_desktop
 
-        @rumps.clicked("Status")  # type: ignore[misc]
-        def status(self, _: Any) -> None:
-            readiness = check_readiness(LunePaths.defaults())
-            rumps.alert(title="Lune", message=readiness.state)
-
-    LuneMenu().run()
-    return 0
+    return run_desktop()
 
 
 if __name__ == "__main__":

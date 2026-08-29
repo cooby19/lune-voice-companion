@@ -143,3 +143,21 @@ async def test_a_closed_sink_refuses_new_audio() -> None:
     assert sink.closed is True
     assert await sink.submit(pcm_chunk(1)) is False
     assert await sink.drain(1) is False
+
+
+@pytest.mark.asyncio
+async def test_one_burst_written_sentence_fits_the_default_queue() -> None:
+    # AVSpeech pushed 271 buffers for a ~3 s Chinese sentence on the target Mac,
+    # so the default queue must hold a whole sentence before the device drains it.
+    device = BlockingOutputDevice()
+    sink = PlaybackSink(device)
+    await sink.start()
+
+    for _ in range(271):
+        assert await sink.submit(pcm_chunk(1, amplitude=9_000)) is True
+
+    assert sink.health().overflowed is False
+    device.gate.set()
+    assert await sink.drain(1) is True
+    assert len(device.written) == 271
+    await sink.close()

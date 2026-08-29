@@ -9,6 +9,7 @@ from lune.audio.types import AudioSpan
 
 type CancelReason = Literal[
     "barge_in",
+    "text_barge_in",
     "device_changed",
     "microphone_off",
     "stream_error",

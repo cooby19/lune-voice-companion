@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Lune</title>
+    <link rel="stylesheet" href="app.css" />
+  </head>
+  <body>
+    <main id="lune-app" class="lune-app" aria-busy="true">
+      <div id="connection-status" class="connection-status" role="status" aria-live="polite">
+        正在連線到 Lune…
+      </div>
+
+      <section id="setup-screen" class="setup-screen" hidden aria-labelledby="setup-title">
+        <div class="setup-brand">
+          <span class="brand-mark" aria-hidden="true">◒</span>
+          <span>Lune</span>
+        </div>
+        <div class="setup-layout">
+          <aside class="setup-steps" aria-label="設定進度">
+            <p class="eyebrow">第一次啟動</p>
+            <h1 id="setup-title">先把 Lune 準備好</h1>
+            <ol id="setup-step-list" class="step-list"></ol>
+            <p class="setup-privacy-note">這個測試階段，連文字都不會離開這台電腦。</p>
+          </aside>
+          <section id="setup-content" class="setup-content" aria-live="polite"></section>
+        </div>
+      </section>
+
+      <section id="workspace-screen" class="workspace-screen" aria-label="Lune 對話介面">
+        <aside id="sidebar" class="sidebar" aria-label="對話與設定">
+          <div class="sidebar-top">
+            <div class="sidebar-brand">
+              <span class="brand-mark" aria-hidden="true">◒</span>
+              <span class="sidebar-copy">
+                <strong>Lune</strong>
+                <small id="sidebar-state">準備中</small>
+              </span>
+            </div>
+            <button
+              id="sidebar-toggle"
+              class="icon-button sidebar-toggle"
+              type="button"
+              aria-label="收合側邊欄"
+              aria-controls="sidebar"
+              aria-expanded="true"
+              title="收合側邊欄"
+            >
+              <span aria-hidden="true">‹</span>
+            </button>
+          </div>
+
+          <button id="new-thread-button" class="new-thread-button" type="button">
+            <span aria-hidden="true">＋</span>
+            <span class="sidebar-copy">新對話</span>
+          </button>
+
+          <nav id="thread-list" class="thread-list" aria-label="對話列表"></nav>
+
+          <nav class="sidebar-links" aria-label="其他頁面">
+            <button class="sidebar-link" type="button" data-view="memories">
+              <span class="sidebar-icon" aria-hidden="true">⌁</span>
+              <span class="sidebar-copy">Lune 記得的事</span>
+            </button>
+            <button class="sidebar-link" type="button" data-view="profile">
+              <span class="sidebar-icon" aria-hidden="true">◌</span>
+              <span class="sidebar-copy">你與 Lune 的設定檔</span>
+            </button>
+            <button class="sidebar-link" type="button" data-view="settings">
+              <span class="sidebar-icon" aria-hidden="true">⚙</span>
+              <span class="sidebar-copy">設定</span>
+            </button>
+          </nav>
+
+          <p class="sidebar-local-only sidebar-copy">這個階段全程只在這台電腦上</p>
+        </aside>
+
+        <section class="main-panel">
+          <header class="topbar">
+            <div class="topbar-thread">
+              <button id="mobile-sidebar-button" class="icon-button mobile-only" type="button" aria-label="開啟側邊欄">
+                <span aria-hidden="true">☰</span>
+              </button>
+              <div>
+                <p id="view-kicker" class="eyebrow">對話</p>
+                <h1 id="topbar-title">Lune</h1>
+              </div>
+              <button
+                id="rename-thread-button"
+                class="button-text topbar-rename"
+                type="button"
+                hidden
+              >
+                重新命名
+              </button>
+            </div>
+            <div class="topbar-actions">
+              <button id="device-button" class="device-button" type="button" aria-label="查看音訊裝置狀態">
+                <span id="device-dot" class="status-dot status-dot--quiet" aria-hidden="true"></span>
+                <span id="device-label">音訊裝置準備中</span>
+              </button>
+              <button id="call-button" class="call-button" type="button">打給 Lune</button>
+            </div>
+          </header>
+
+          <div id="view-root" class="view-root"></div>
+        </section>
+      </section>
+
+      <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+      <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">
+        <form method="dialog" class="confirm-dialog-content">
+          <p class="eyebrow">刪除記憶</p>
+          <h2 id="confirm-dialog-title">確定要忘記這件事嗎？</h2>
+          <p id="confirm-dialog-copy"></p>
+          <div class="dialog-actions">
+            <button id="confirm-cancel" class="button-quiet" value="cancel" type="submit">先不要</button>
+            <button id="confirm-accept" class="button-danger" value="confirm" type="submit">從硬碟抹掉</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog id="rename-dialog" class="confirm-dialog" aria-labelledby="rename-dialog-title">
+        <form method="dialog" class="confirm-dialog-content">
+          <p class="eyebrow">對話名稱</p>
+          <h2 id="rename-dialog-title">替這個對話取個名字</h2>
+          <label class="field-label" for="rename-thread-input">名稱</label>
+          <input
+            id="rename-thread-input"
+            class="field-control"
+            name="title"
+            type="text"
+            maxlength="160"
+            autocomplete="off"
+            required
+          />
+          <div class="dialog-actions">
+            <button id="rename-cancel" class="button-quiet" value="cancel" type="submit">先不要</button>
+            <button id="rename-accept" class="button-quiet" value="confirm" type="submit">儲存名稱</button>
+          </div>
+        </form>
+      </dialog>
+    </main>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>

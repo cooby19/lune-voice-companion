@@ -119,6 +119,56 @@ async def test_one_complete_turn_reaches_playback_and_local_storage(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_typed_text_can_skip_speech_without_losing_the_completed_turn(tmp_path: Path) -> None:
+    harness = build_harness(tmp_path, terra_scripts=((text("文字回覆。"), terminal()),))
+    await listen(harness)
+
+    submitted = await harness.pipeline.session.submit_text("請用文字回覆", speak_text=False)
+    assert submitted == "thinking"
+    assert await harness.pipeline.session.wait_for_turns() is True
+
+    assert harness.backend.requests == []
+    assert stored_messages(harness) == [
+        ("user", "請用文字回覆"),
+        ("assistant", "文字回覆。"),
+    ]
+    assert harness.pipeline.session.state == "listening"
+    await harness.pipeline.session.close()
+
+
+@pytest.mark.asyncio
+async def test_typed_input_interrupts_an_active_response_through_the_central_fence(
+    tmp_path: Path,
+) -> None:
+    resume = asyncio.Event()
+    harness = build_harness(
+        tmp_path,
+        terra_scripts=(
+            (text("第一個回答。"), text("不該留下。"), terminal()),
+            (text("新的文字回答。"), terminal()),
+        ),
+        backend=ScriptedTTSBackend(chunks=6, pause=resume.wait),
+    )
+    await listen(harness)
+    await harness.speak_utterance()
+    await harness.stt.emit_final("先說一件事")
+    await wait_for_state(harness, "speaking")
+
+    submitted = await harness.pipeline.session.submit_text("等等，改用文字", speak_text=False)
+    assert submitted == "thinking"
+    assert harness.pipeline.coordinator.cancel_events[-1].reason == "text_barge_in"
+    assert harness.pipeline.session.generation_id == 1
+
+    resume.set()
+    assert await harness.pipeline.session.wait_for_turns() is True
+    assert stored_messages(harness) == [
+        ("user", "等等，改用文字"),
+        ("assistant", "新的文字回答。"),
+    ]
+    await harness.pipeline.session.close()
+
+
+@pytest.mark.asyncio
 async def test_the_end_to_end_clock_starts_at_the_last_voiced_sample(tmp_path: Path) -> None:
     harness = build_harness(tmp_path, terra_scripts=((text("好。"), terminal()),))
     await listen(harness)
@@ -530,4 +580,63 @@ async def test_a_cancelled_turn_leaves_the_session_listening_again(tmp_path: Pat
     await harness.pipeline.session.wait_for_turns()
     assert harness.pipeline.session.state == "listening"
     assert stored_messages(harness) == []
+    await harness.pipeline.session.close()
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_provider_fault_ends_the_turn_and_keeps_listening(
+    tmp_path: Path,
+) -> None:
+    # An exhausted script deque raises inside the provider, which is what a
+    # crashed local worker looks like from the session's side.
+    harness = build_harness(tmp_path, terra_scripts=())
+    await listen(harness)
+
+    await harness.speak_utterance()
+    await harness.stt.emit_final("早安")
+    assert await harness.pipeline.session.wait_for_turns() is True
+
+    report = harness.pipeline.session.reports[-1]
+    assert report.outcome == "error"
+    assert report.sentences_played == 0
+    assert stored_messages(harness) == []
+    assert harness.pipeline.session.state == "error"
+
+    # The microphone must not stay stuck behind a turn that will never answer.
+    await harness.speak_utterance()
+    assert len(harness.stt.requests) == 2
+    await harness.pipeline.session.close()
+
+
+class StubSampleClock:
+    """Answer with the capture time the device would have reported."""
+
+    def __init__(self, at: float) -> None:
+        self.at = at
+        self.asked: list[int] = []
+
+    def wall_time_of_sample(self, sample: int) -> float | None:
+        self.asked.append(sample)
+        return self.at
+
+
+@pytest.mark.asyncio
+async def test_the_end_to_end_clock_uses_capture_time_not_processing_time(
+    tmp_path: Path,
+) -> None:
+    # Subtracting the trailing silence from "now" hides however far the pipeline
+    # trails the microphone, and it can only make the measured latency shorter.
+    clock = StubSampleClock(at=1_234.5)
+    harness = build_harness(
+        tmp_path,
+        terra_scripts=((text("你好。"), terminal()),),
+        sample_clock=clock,
+    )
+    await listen(harness)
+
+    await harness.speak_utterance()
+    generation = harness.pipeline.session.generation_id
+
+    assert harness.pipeline.session.speech_end_at(generation) == 1_234.5
+    assert clock.asked and clock.asked[-1] > 0
     await harness.pipeline.session.close()

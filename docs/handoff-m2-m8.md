@@ -36,7 +36,8 @@ M6 的 30 輪端到端 benchmark 與實體音訊 gate。本地 LLM spike 的實�
 | M6 CI | [GitHub Actions #33179142684](https://github.com/cooby19/lune-voice-companion/actions/runs/33179142684)，已通過 |
 | M6 AVSpeech 修正 | `ad353e6`（`M6: drive AVSpeech from the main run loop, as measured`），[GitHub Actions #33185129924](https://github.com/cooby19/lune-voice-companion/actions/runs/33185129924)，已通過 |
 | M7 前半本機 public gate | 56 項 targeted tests／459 項完整 pytest；CoreAudio／PortAudio adapter 與 engine integration 全部使用 fake／deterministic 依賴，實體 gate 未執行 |
-| 下一階段 | 取得四項獨立授權後執行無雲端實體 smoke test；rumps、authenticated IPC 與 py2app 仍屬 M7 後半 |
+| M7 第二階段實體 smoke | 2026-08-29 已授權執行：一次完整實體 turn 完成，端到端 2,664.7 ms（門檻 p50 ≤1.5 s 未通過）；插話 200 ms 與裝置切換未執行；期間修正五項缺陷；486 項完整 pytest |
+| 下一階段 | 執行插話 200 ms 與裝置切換／拔除實體 gate，再視情況做 30 輪 benchmark；rumps、authenticated IPC 與 py2app 仍屬 M7 後半 |
 
 目前完成 M0、M0.5、M1、M2、M3、M4、M5、M6 與 M7 前半的 public gate，以及本地 LLM spike
 的完整 gate；M6 的 30 輪端到端 benchmark 與實體音訊 gate 尚未執行，M7 後半與 M8 尚未實作。本機可能已有私人設定，但私人 persona、
@@ -474,11 +475,13 @@ STT adapter 內固定單一 window 尺寸，避免形狀反覆變動。
   revision 與 checksum。
 - LLM 第一句限長，已實測可省約 600 ms。
 
-### 待使用者決策
+### 使用者決策（2026-08-29，已定）
 
-4B Q4 未通過延遲 gate，依 `project-decisions.md` 視為本地即時路徑在此硬體上不成立。
-改採 hybrid、維持 OpenAI 或退到更小尺寸都是新的產品決策，不得自行降低門檻或靜默切換。
-決策確定前，M6 的 LLM provider 維持 `OpenAIResponsesLLMService`。
+4B Q4 未通過延遲 gate，依 `project-decisions.md` 視為本地即時路徑在此硬體上不成立。使用者
+已就此做出產品決策：長期組成為 hybrid（`docs/ui-spec.md`：OpenAI 為主、本機為備援），而
+**測試階段先把主備倒置**——本機 `Qwen3.5-4B` Q4 為唯一 provider，雲端延後規劃。首句延遲
+門檻在該階段為明示豁免，門檻數值與失敗證據都原樣保留，恢復雲端為主時自動重新適用。
+詳見 `project-decisions.md` 的「測試階段的 LLM 組成」。
 
 ### 決策範圍
 
@@ -494,8 +497,9 @@ STT adapter 內固定單一 window 尺寸，避免形狀反覆變動。
   兩階段工具提案與 cancel/drain 語意；OpenAI-compatible 不等於 Responses WebSocket，可另建
   provider，不得用不相容 endpoint 假裝 drop-in replacement。
 - 若 4B Q4 在 16GB 不符合 gate，保留失敗證據並停止；是否改採 hybrid、維持 OpenAI 或退到
-  更小尺寸是新的產品決策，不得自行降低門檻或靜默切換。反之若 4B 全數通過且記憶體與熱
-  餘裕充足，是否升級到 9B Q4 同樣是新的產品決策，須重跑完整 gate。
+  更小尺寸是新的產品決策，不得自行降低門檻或靜默切換。該決策已於 2026-08-29 做出，見上方
+  「使用者決策」。反之若 4B 全數通過且記憶體與熱餘裕充足，是否升級到 9B Q4 同樣是新的
+  產品決策，須重跑完整 gate。
 
 ### Spike gate
 
@@ -590,10 +594,40 @@ STT adapter 內固定單一 window 尺寸，避免形狀反覆變動。
 - 公開 gate 未列舉或開啟實體裝置，也未讀取私人設定、模型或 key；麥克風／耳機／模型與本地
   LLM gate 仍須分別取得授權。
 
+## M7 第二階段：無雲端實體 smoke（2026-08-29 已執行）
+
+`src/lune/physical_smoke.py` 與 `scripts/run_physical_voice_smoke.py` 提供四個情境：
+`preflight`、`turn`、`barge-in`、`device-switch`。它使用 scripted provider，量測時不讓模型
+抖動污染音訊數據；證據只輸出數值與狀態碼，沒有音訊、逐字稿或私人路徑。
+
+已執行並通過：冷啟動 `mic_off`、耳機辨識、麥克風開啟（16 kHz mono）、一次完整 turn、
+關閉後無 child process 與殘留 task。未執行：`barge-in`、`device-switch`、30 輪 benchmark。
+端到端 2,664.7 ms 未達 p50 ≤1.5 s；門檻與證據原樣保留，詳見 `progress.md`。
+
+### 實作上必須保留的發現
+
+- **佇列上限必須以「一整句 AVSpeech」為單位。** M6 已把 adapter queue 提到 512，但下游
+  `PlaybackSink` 仍是 32，於是每一輪都以 `output_overflow` 被取消。凡是接在 AVSpeech 後面的
+  bounded queue 都適用這個尺度。
+- **慢推論會餓死輸入 callback。** Whisper 推論期間 PortAudio 會設 `paInputOverflow`；原本的
+  「一律取消 generation」政策因此讓慢的 turn 自我毀滅。現在只有進行中的 utterance 才取消。
+- **`exception_on_underflow=True` 會把正常抖動變成致命錯誤。** 輸出 underflow 只代表裝置消耗
+  得比寫入端快。
+- **端到端時鐘不可由處理時間推導。** 舊版把管線落後量算進起點，讓數字變好看（實測落後
+  241.8 ms、峰值 595 ms）。改為由 `LocalAudioTransport.wall_time_of_sample()` 反推。
+- **真實收音會觸發 Whisper 的溫度重試。** 乾淨的合成語料**不會**，所以不能用合成語料否定這
+  個問題。實測溫度 `1.0` 的解碼需 6,605–10,271 ms。現固定為 `(0.0, 0.2)`。
+- **延遲數字必須連同電源模式與負載引用。** 低電量模式使同一份語料從 1,826–1,889 ms 變成
+  6,676–7,290 ms。
+
 ## M7：選單列 App、IPC 與打包
 
-狀態：前半的最小實體語音垂直切片已完成 public gate；以下 UI／IPC／打包仍待處理。本次沒有
-為了垂直切片提前實作。
+狀態：前半的最小實體語音垂直切片已完成 public gate，第二階段的實體 smoke 已部分執行；
+以下 UI／IPC／打包仍待處理。
+
+UI 出現前，`lune-engine --microphone` 是唯一能開始對話的方式（冷啟動 mic-off 政策不變），
+`--ephemeral-memory` 可讓 shakedown 對話不寫入真實資料庫。這兩個旗標不取代 M7 後半的
+`set_microphone` IPC 命令。
 
 ### 實作重點
 
@@ -636,10 +670,12 @@ STT adapter 內固定單一 window 尺寸，避免形狀反覆變動。
 
 ```text
 先完整閱讀我提供的 PLAN.md，以及 repo 的 docs/handoff-m2-m8.md、docs/progress.md、
-docs/project-decisions.md。M7 前半的 CoreAudio／PyAudio stream owner、AudioOutputDevice 與
-engine 唯一管線組裝已完成 public gate，但實體 gate 未執行。先向使用者分別取得麥克風、
-耳機／實體輸出、本機 Whisper／E5 與本地 LLM 授權；取得前不得讀取私人設定、模型或裝置內容。
-第二階段先用 scripted provider 跑無雲端實體 smoke test，保留 200 ms 與 p50／p95 原門檻；
-第三階段再檢查既有 Qwen runtime／模型是否存在並評估 opt-in provider，不得改 release 預設或
-架構。rumps、authenticated IPC 與 py2app 是 M7 後半，不要混入硬體驗收。不得批量刪除檔案。
+docs/project-decisions.md、docs/ui-spec.md。M7 第二階段的實體 smoke 已在 2026-08-29 部分執行：
+一次完整實體 turn 已完成（端到端 2,664.7 ms，門檻 p50 ≤1.5 s 未通過），但插話 200 ms 與
+裝置切換／拔除仍未執行。先向使用者取得麥克風、耳機／實體輸出、本機 Whisper／E5、本地 LLM
+授權，需要真實對話時另外取得私人 config／persona 的讀取授權；取得前不得讀取私人設定、模型
+或裝置內容。跑實體情境時務必先確認低電量模式已關閉並記錄當時負載，否則延遲數字不可比。
+用 scripts/run_physical_voice_smoke.py 的 barge-in 與 device-switch 補完 M7 第二階段，
+保留 200 ms 與 p50／p95 原門檻，不得為了通過而放寬。rumps、authenticated IPC 與 py2app 是
+M7 後半，不要混入硬體驗收。不得批量刪除檔案。
 ```

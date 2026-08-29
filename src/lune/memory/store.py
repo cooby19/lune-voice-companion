@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Final, Literal, cast
 from uuid import uuid4
 
 import numpy as np
@@ -23,9 +24,17 @@ from lune.memory.migrations import MIGRATIONS
 
 EMBEDDING_DIMENSIONS = 384
 type FloatArray = npt.NDArray[np.float32]
+type ThreadTitleSource = Literal["default", "generated", "manual"]
+type MemorySource = Literal["user_requested", "lune_observed"]
+
+DEFAULT_CONVERSATION_TITLE: Final[str] = "新對話"
 _MEMORY_CATEGORIES = frozenset(
     {"stable_preference", "important_person_or_event", "explicit_plan", "explicit_request"}
 )
+_THREAD_TITLE_SOURCES: Final[frozenset[ThreadTitleSource]] = frozenset(
+    {"default", "generated", "manual"}
+)
+_MEMORY_SOURCES: Final[frozenset[MemorySource]] = frozenset({"user_requested", "lune_observed"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +44,31 @@ class StoredTurn:
     generation_id: int
     sequence: int
     messages: tuple[ConversationMessage, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationThread:
+    """A UI-facing view of one persisted conversation session."""
+
+    id: str
+    title: str = field(repr=False)
+    title_source: ThreadTitleSource
+    started_at: str
+    updated_at: str
+    ended_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredMessage:
+    """One final, UI-readable message from a completed conversation turn."""
+
+    id: str
+    thread_id: str
+    turn_id: str
+    sequence: int
+    role: str
+    created_at: str
+    content: str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +90,7 @@ class StoredMemory:
     created_at: str
     content: str = field(repr=False)
     embedding: FloatArray = field(repr=False, compare=False)
+    source: MemorySource = "lune_observed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,15 +108,25 @@ class RelationshipEvent:
 class MemoryStore:
     """Own one configured SQLite connection and serialize all local mutations."""
 
-    def __init__(self, database_path: Path, *, busy_timeout_ms: int = 5_000) -> None:
+    def __init__(
+        self,
+        database_path: Path,
+        *,
+        busy_timeout_ms: int = 5_000,
+        ephemeral: bool = False,
+    ) -> None:
         if busy_timeout_ms <= 0:
             raise ValueError("busy timeout must be positive")
+        if ephemeral and database_path != Path(":memory:"):
+            raise ValueError("ephemeral stores must use the in-memory database path")
         self._path = database_path
+        self._ephemeral = ephemeral
         self._lock = threading.RLock()
         self._closed = False
-        self._prepare_private_path()
+        if not ephemeral:
+            self._prepare_private_path()
         self._connection = sqlite3.connect(
-            database_path,
+            ":memory:" if ephemeral else database_path,
             timeout=busy_timeout_ms / 1_000,
             isolation_level=None,
             check_same_thread=False,
@@ -90,6 +135,12 @@ class MemoryStore:
         self._configure_connection(busy_timeout_ms)
         self._apply_migrations()
         self._enforce_sidecar_permissions()
+
+    @classmethod
+    def ephemeral(cls, *, busy_timeout_ms: int = 5_000) -> MemoryStore:
+        """Create a process-local store that can never write a transcript to disk."""
+
+        return cls(Path(":memory:"), busy_timeout_ms=busy_timeout_ms, ephemeral=True)
 
     @property
     def database_path(self) -> Path:
@@ -120,20 +171,38 @@ class MemoryStore:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def start_session(self, session_id: str | None = None, *, at: datetime | None = None) -> str:
+    def start_session(
+        self,
+        session_id: str | None = None,
+        *,
+        title: str | None = None,
+        at: datetime | None = None,
+    ) -> str:
         identifier = _validated_id(session_id or uuid4().hex, "session")
+        clean_title = (
+            _validated_thread_title(title) if title is not None else DEFAULT_CONVERSATION_TITLE
+        )
+        title_source: ThreadTitleSource = "manual" if title is not None else "default"
+        timestamp = _timestamp(at)
         with self._write():
             self._connection.execute(
-                "INSERT INTO sessions (id, started_at) VALUES (?, ?)",
-                (identifier, _timestamp(at)),
+                """
+                INSERT INTO sessions (id, started_at, title, title_source, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (identifier, timestamp, clean_title, title_source, timestamp),
             )
         return identifier
 
     def end_session(self, session_id: str, *, at: datetime | None = None) -> None:
+        timestamp = _timestamp(at)
         with self._write():
             cursor = self._connection.execute(
-                "UPDATE sessions SET ended_at = ? WHERE id = ? AND ended_at IS NULL",
-                (_timestamp(at), _validated_id(session_id, "session")),
+                """
+                UPDATE sessions SET ended_at = ?, updated_at = ?
+                WHERE id = ? AND ended_at IS NULL
+                """,
+                (timestamp, timestamp, _validated_id(session_id, "session")),
             )
             if cursor.rowcount != 1:
                 raise ValueError("unknown or already ended session")
@@ -181,32 +250,22 @@ class MemoryStore:
     ) -> str:
         """Append only text whose corresponding audio was confirmed as played."""
 
-        clean = _validated_content(content, "assistant playback")
-        turn_id = _validated_id(turn_id, "turn")
-        with self._write():
-            self._require_pending_turn(turn_id)
-            row = self._connection.execute(
-                "SELECT id, content FROM messages WHERE turn_id = ? AND role = 'assistant'",
-                (turn_id,),
-            ).fetchone()
-            if row is None:
-                message_id = uuid4().hex
-                self._connection.execute(
-                    """
-                    INSERT INTO messages (id, turn_id, role, content, created_at)
-                    VALUES (?, ?, 'assistant', ?, ?)
-                    """,
-                    (message_id, turn_id, clean, _timestamp(at)),
-                )
-                return message_id
-            self._connection.execute(
-                "UPDATE messages SET content = ? WHERE id = ?",
-                (str(row["content"]) + clean, str(row["id"])),
-            )
-            return str(row["id"])
+        return self._append_assistant_text(turn_id, content, label="assistant playback", at=at)
+
+    def append_assistant_text_delivery(
+        self, turn_id: str, content: str, *, at: datetime | None = None
+    ) -> str:
+        """Append text confirmed delivered to the user interface, not audio playback.
+
+        Callers must still use the same generation fence as playback before calling this.
+        This method deliberately does not claim that corresponding audio was played.
+        """
+
+        return self._append_assistant_text(turn_id, content, label="assistant text delivery", at=at)
 
     def complete_turn(self, turn_id: str, *, at: datetime | None = None) -> None:
         turn_id = _validated_id(turn_id, "turn")
+        completed_at = _timestamp(at)
         with self._write():
             self._require_pending_turn(turn_id)
             roles = {
@@ -216,10 +275,17 @@ class MemoryStore:
                 )
             }
             if roles != {"user", "assistant"}:
-                raise ValueError("a complete turn requires final user and played assistant text")
+                raise ValueError("a complete turn requires final user and delivered assistant text")
             self._connection.execute(
                 "UPDATE turns SET status = 'complete', completed_at = ? WHERE id = ?",
-                (_timestamp(at), turn_id),
+                (completed_at, turn_id),
+            )
+            self._connection.execute(
+                """
+                UPDATE sessions SET updated_at = ?
+                WHERE id = (SELECT session_id FROM turns WHERE id = ?)
+                """,
+                (completed_at, turn_id),
             )
 
     def cancel_turn(self, turn_id: str, *, at: datetime | None = None) -> None:
@@ -230,6 +296,125 @@ class MemoryStore:
                 "UPDATE turns SET status = 'cancelled', completed_at = ? WHERE id = ?",
                 (_timestamp(at), turn_id),
             )
+
+    def list_conversation_threads(
+        self, *, limit: int | None = None
+    ) -> tuple[ConversationThread, ...]:
+        """List persisted sessions as UI-safe conversation thread metadata.
+
+        Titles are deliberately the only user-authored text exposed by this index; message
+        previews are read through :meth:`conversation_messages` for the selected thread.
+        """
+
+        if limit is not None and limit <= 0:
+            raise ValueError("conversation thread limit must be positive")
+        query = """
+            SELECT id, title, title_source, started_at, updated_at, ended_at
+            FROM sessions
+            ORDER BY updated_at DESC, id DESC
+        """
+        rows = (
+            self._execute(query).fetchall()
+            if limit is None
+            else self._execute(query + " LIMIT ?", (limit,)).fetchall()
+        )
+        return tuple(_conversation_thread_from_row(row) for row in rows)
+
+    def get_conversation_thread(self, thread_id: str) -> ConversationThread | None:
+        row = self._execute(
+            """
+            SELECT id, title, title_source, started_at, updated_at, ended_at
+            FROM sessions WHERE id = ?
+            """,
+            (_validated_id(thread_id, "conversation thread"),),
+        ).fetchone()
+        return None if row is None else _conversation_thread_from_row(row)
+
+    def conversation_messages(self, thread_id: str) -> tuple[StoredMessage, ...]:
+        """Read final messages for one thread without surfacing pending or cancelled text."""
+
+        rows = self._execute(
+            """
+            SELECT messages.id, turns.session_id AS thread_id, messages.turn_id,
+                   turns.sequence, messages.role, messages.content, messages.created_at
+            FROM messages
+            JOIN turns ON turns.id = messages.turn_id
+            WHERE turns.session_id = ? AND turns.status = 'complete'
+            ORDER BY turns.sequence,
+                     CASE messages.role WHEN 'user' THEN 0 ELSE 1 END,
+                     messages.id
+            """,
+            (_validated_id(thread_id, "conversation thread"),),
+        ).fetchall()
+        return tuple(
+            StoredMessage(
+                id=str(row["id"]),
+                thread_id=str(row["thread_id"]),
+                turn_id=str(row["turn_id"]),
+                sequence=int(row["sequence"]),
+                role=str(row["role"]),
+                created_at=str(row["created_at"]),
+                content=str(row["content"]),
+            )
+            for row in rows
+        )
+
+    def rename_conversation_thread(
+        self, thread_id: str, title: str, *, at: datetime | None = None
+    ) -> ConversationThread:
+        """Apply a user-selected title and protect it from later automatic replacement."""
+
+        identifier = _validated_id(thread_id, "conversation thread")
+        clean_title = _validated_thread_title(title)
+        updated_at = _timestamp(at)
+        with self._write():
+            row = self._connection.execute(
+                """
+                SELECT id, started_at, ended_at FROM sessions WHERE id = ?
+                """,
+                (identifier,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("unknown conversation thread")
+            self._connection.execute(
+                """
+                UPDATE sessions
+                SET title = ?, title_source = 'manual', updated_at = ?
+                WHERE id = ?
+                """,
+                (clean_title, updated_at, identifier),
+            )
+        return ConversationThread(
+            id=identifier,
+            title=clean_title,
+            title_source="manual",
+            started_at=str(row["started_at"]),
+            updated_at=updated_at,
+            ended_at=None if row["ended_at"] is None else str(row["ended_at"]),
+        )
+
+    def set_generated_conversation_title(
+        self, thread_id: str, title: str, *, at: datetime | None = None
+    ) -> bool:
+        """Set the one automatic title after a first completed turn, never replacing a rename."""
+
+        identifier = _validated_id(thread_id, "conversation thread")
+        clean_title = _validated_thread_title(title)
+        with self._write():
+            cursor = self._connection.execute(
+                """
+                UPDATE sessions
+                SET title = ?, title_source = 'generated', updated_at = ?
+                WHERE id = ?
+                  AND title_source = 'default'
+                  AND EXISTS (
+                      SELECT 1 FROM turns
+                      WHERE turns.session_id = sessions.id AND turns.status = 'complete'
+                  )
+                """,
+                (clean_title, _timestamp(at), identifier),
+            )
+            return cursor.rowcount == 1
 
     def recent_complete_turns(self, session_id: str, *, limit: int = 12) -> tuple[StoredTurn, ...]:
         if limit <= 0:
@@ -386,6 +571,7 @@ class MemoryStore:
         embedding_model: str,
         embedding_revision: str,
         source_turn_id: str,
+        source: MemorySource | None = None,
         at: datetime | None = None,
     ) -> StoredMemory | None:
         memory_id = _validated_id(memory_id, "memory")
@@ -395,6 +581,9 @@ class MemoryStore:
             raise ValueError("unsupported memory category")
         if not 0.0 <= importance <= 1.0:
             raise ValueError("memory importance must be between zero and one")
+        memory_source = _memory_source_for(category) if source is None else source
+        if memory_source not in _MEMORY_SOURCES:
+            raise ValueError("unsupported memory source")
         vector = _normalized_embedding(embedding)
         created_at = _timestamp(at)
         try:
@@ -404,8 +593,8 @@ class MemoryStore:
                     INSERT INTO long_term_memories
                         (id, content, normalized_content, category, importance, embedding,
                          embedding_dimensions, embedding_model, embedding_revision,
-                         embedding_dtype, source_turn_id, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'float32', ?, ?)
+                         embedding_dtype, source_turn_id, source, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'float32', ?, ?, ?)
                     """,
                     (
                         memory_id,
@@ -418,6 +607,7 @@ class MemoryStore:
                         embedding_model,
                         embedding_revision,
                         _validated_id(source_turn_id, "turn"),
+                        memory_source,
                         created_at,
                     ),
                 )
@@ -433,12 +623,13 @@ class MemoryStore:
             created_at,
             clean,
             vector,
+            memory_source,
         )
 
     def list_memories(self) -> tuple[StoredMemory, ...]:
         rows = self._execute(
             """
-            SELECT id, content, category, importance, embedding, source_turn_id, created_at
+            SELECT id, content, category, importance, embedding, source_turn_id, source, created_at
             FROM long_term_memories ORDER BY created_at, id
             """
         ).fetchall()
@@ -630,8 +821,9 @@ class MemoryStore:
     def _configure_connection(self, busy_timeout_ms: int) -> None:
         self._connection.execute("PRAGMA foreign_keys = ON")
         journal = self._connection.execute("PRAGMA journal_mode = WAL").fetchone()
-        if journal is None or str(journal[0]).lower() != "wal":
-            raise RuntimeError("SQLite WAL mode is required")
+        expected_journal = "memory" if self._ephemeral else "wal"
+        if journal is None or str(journal[0]).lower() != expected_journal:
+            raise RuntimeError(f"SQLite {expected_journal.upper()} journal mode is required")
         self._connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
         self._connection.execute("PRAGMA secure_delete = ON")
 
@@ -650,6 +842,8 @@ class MemoryStore:
             )
 
     def _enforce_sidecar_permissions(self) -> None:
+        if self._ephemeral:
+            return
         self._path.chmod(0o600)
         for suffix in ("-wal", "-shm"):
             sidecar = Path(str(self._path) + suffix)
@@ -709,6 +903,38 @@ class MemoryStore:
                 raise ValueError(f"turn already has a {role} message") from error
         return message_id
 
+    def _append_assistant_text(
+        self,
+        turn_id: str,
+        content: str,
+        *,
+        label: str,
+        at: datetime | None,
+    ) -> str:
+        clean = _validated_content(content, label)
+        identifier = _validated_id(turn_id, "turn")
+        with self._write():
+            self._require_pending_turn(identifier)
+            row = self._connection.execute(
+                "SELECT id, content FROM messages WHERE turn_id = ? AND role = 'assistant'",
+                (identifier,),
+            ).fetchone()
+            if row is None:
+                message_id = uuid4().hex
+                self._connection.execute(
+                    """
+                    INSERT INTO messages (id, turn_id, role, content, created_at)
+                    VALUES (?, ?, 'assistant', ?, ?)
+                    """,
+                    (message_id, identifier, clean, _timestamp(at)),
+                )
+                return message_id
+            self._connection.execute(
+                "UPDATE messages SET content = ? WHERE id = ?",
+                (str(row["content"]) + clean, str(row["id"])),
+            )
+            return str(row["id"])
+
     def _stored_turn(self, row: sqlite3.Row) -> StoredTurn:
         message_rows = self._execute(
             """
@@ -750,6 +976,13 @@ def _validated_content(value: str, label: str) -> str:
     return clean
 
 
+def _validated_thread_title(value: str) -> str:
+    clean = value.strip()
+    if not clean or len(clean) > 160 or any(not character.isprintable() for character in clean):
+        raise ValueError("conversation title must contain 1 to 160 printable characters")
+    return clean
+
+
 def _normalize_content(value: str) -> str:
     return " ".join(value.casefold().split())
 
@@ -776,4 +1009,34 @@ def _memory_from_row(row: sqlite3.Row) -> StoredMemory:
         str(row["created_at"]),
         str(row["content"]),
         vector,
+        _memory_source_from_value(row["source"]),
     )
+
+
+def _conversation_thread_from_row(row: sqlite3.Row) -> ConversationThread:
+    return ConversationThread(
+        id=str(row["id"]),
+        title=str(row["title"]),
+        title_source=_thread_title_source_from_value(row["title_source"]),
+        started_at=str(row["started_at"]),
+        updated_at=str(row["updated_at"]),
+        ended_at=None if row["ended_at"] is None else str(row["ended_at"]),
+    )
+
+
+def _thread_title_source_from_value(value: object) -> ThreadTitleSource:
+    source = str(value)
+    if source not in _THREAD_TITLE_SOURCES:
+        raise RuntimeError("stored conversation title has an invalid source")
+    return cast(ThreadTitleSource, source)
+
+
+def _memory_source_from_value(value: object) -> MemorySource:
+    source = str(value)
+    if source not in _MEMORY_SOURCES:
+        raise RuntimeError("stored memory has an invalid source")
+    return cast(MemorySource, source)
+
+
+def _memory_source_for(category: str) -> MemorySource:
+    return "user_requested" if category == "explicit_request" else "lune_observed"

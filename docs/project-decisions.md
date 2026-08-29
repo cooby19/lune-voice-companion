@@ -178,6 +178,52 @@
   fake TTS 與 recording output。這些證據不代表麥克風權限、channel mapping、200 ms 插話、
   實體裝置切換或無殘留資源 gate 已通過；所有實體測試仍須另行逐項授權。
 
+## 測試階段的 LLM 組成（2026-08-29 由使用者決定）
+
+- 測試階段的 release 預設 provider 改為**本機 `Qwen3.5-4B` Q4**，雲端 `openai_responses`
+  暫不啟用。理由是本階段要驗證的是實體語音路徑本身：本機 provider 不需要 API key、不產生
+  費用、也不依賴網路，能讓 smoke test 與 soak 在完全離線的條件下重複執行。
+- 這不是推翻 `docs/ui-spec.md` 已定案的 hybrid，而是**暫時把主備關係倒置**：測試階段本機為
+  唯一 provider，雲端延後規劃；雲端就緒後恢復 ui-spec 的「OpenAI 為主、本機為備援」。
+- 主力模型的首句延遲門檻（由端到端 p50 1.5 s 反推得到的 1,150 ms）在本階段**明示豁免**，
+  理由與 ui-spec 的備援論證相同：離線可對話優於不可對話。門檻數值不得修改也不得刪除，
+  spike 的失敗證據原樣保留。恢復雲端為主時，該門檻自動重新適用。
+- 豁免只涵蓋 LLM 首句延遲。音訊路徑的 200 ms 插話門檻與端到端 p50／p95 維持原值；實體
+  smoke test 仍以 scripted provider 量測，避免模型抖動污染音訊數據。
+- 本機 provider 沿用既有 spike 的信任邊界：獨立 `mlx-lm` worker、環境 allowlist、強制離線、
+  永不解析 repository ID，只從已 pin 且逐檔 checksum 通過的本機目錄載入。thinking 內容一律
+  在 host 端濾除，不進 `SentenceGate`、TTS、記憶、SQLite 或診斷。
+- 本機 attempt 的預留與結算成本為零，但仍走同一個 `BudgetLedger` 路徑，使雲端恢復後帳務
+  語意不需要改寫。本機模式下不會出現 `budget_locked`。
+
+## M7 第二階段：實體 smoke 期間確立的政策（2026-08-29）
+
+- `PlaybackSink` 的預設容量由 32 提高到 512，理由與 M6 把 AVSpeech adapter queue 提高到 512
+  完全相同：AVSpeech 以爆發方式送出整句 PCM（實測一句 2 秒中文 172 個 chunk、22,050 Hz），
+  而 `_speak` 逐句 drain，因此佇列必須容得下一整句。背壓在此仍不可行。單句超過約六秒的語音
+  會超出這個上限並以失敗收場，而不是無界成長。
+- **input overflow 不再一律取消 generation**（2026-08-29 由使用者決定）。原政策使慢推論自我
+  毀滅：Whisper 推論餓死 PyAudio callback，PortAudio 設下 `paInputOverflow`，於是取消掉推論
+  正在餵養的那個 generation，答案永遠播不出來。新規則是：只有在 turn gate 有進行中的
+  utterance 時才推進 fence；否則只重建取樣時間軸（與取消路徑相同的 transport rebuild），
+  答案繼續產生。「不拼接錯位音訊」的原意由時間軸重建維持。
+- PortAudio 輸出寫入改為 `exception_on_underflow=False`。underflow 表示裝置消耗得比寫入端快，
+  是抖動而非裝置故障；把它當成致命錯誤會在回答中途拆掉輸出串流並取消 turn（實測一次情境
+  出現 3 次輸出失敗、2 次 `stream_error`）。真實裝置錯誤仍然由 `stream.write` 拋出。
+- **端到端時鐘改由擷取時間推導。** `speech_end_at` 原本取「擷取當下的 `monotonic()` 減句尾
+  靜音」，等於把管線落後量算進端到端的起點，只會讓數字變好看（實測輸入落後 241.8 ms、
+  峰值 595 ms）。`LocalAudioTransport` 現在為每個 callback 記錄取樣錨點，`VoiceSession` 以
+  `wall_time_of_sample(last_voiced_sample)` 取得真正的說話結束時刻。這是讓實作符合計畫既有
+  的端到端定義，不是門檻變更。
+- Whisper 解碼溫度固定為 `(0.0, 0.2)`，即只保留一次重試（2026-08-29 由使用者決定）。upstream
+  預設的六趟重試在真實收音上實測 6,605–10,271 ms，會撞破 10 秒 STT watchdog；單次解碼為
+  1,842–1,889 ms。此設定會改變尚未執行的 M2 正規化準確率 gate 的條件，屆時須一併重測。
+- `lune-engine` 新增 `--microphone` 與 `--ephemeral-memory` 兩個旗標。前者是 UI 出現前唯一能
+  開始對話的方式（冷啟動 mic-off 的政策不變，開麥克風仍是明確請求）；後者讓 shakedown 對話
+  不寫入沒有 bulk delete 的真實逐字稿、記憶與好感度。兩者都不改變預設行為。
+- 延遲數字必須連同當時的電源模式與系統負載一起引用。實測低電量模式會讓 Whisper 暖狀態從
+  1,826–1,889 ms 變成 6,676–7,290 ms，與程式無關。
+
 ## 私人資料
 
 - 私人資料根目錄：`~/Library/Application Support/Lune/`。

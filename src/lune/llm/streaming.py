@@ -62,6 +62,9 @@ class ScriptedAttemptProvider:
     model: ModelName
     scripts: Sequence[Sequence[StreamFrameFactory]] = field(repr=False)
     drains: Sequence[Sequence[StreamFrameFactory]] = field(default=(), repr=False)
+    repeat_last: bool = False
+    """Replay the final script forever, for runs whose turn count is not known."""
+
     _scripts: deque[tuple[StreamFrameFactory, ...]] = field(init=False, repr=False)
     _drains: deque[tuple[StreamFrameFactory, ...]] = field(init=False, repr=False)
     cancelled_attempts: list[str] = field(init=False)
@@ -81,7 +84,10 @@ class ScriptedAttemptProvider:
         context: PromptContext,
     ) -> AsyncIterator[ProviderStreamFrame]:
         del context
-        script = self._scripts.popleft()
+        if self.repeat_last and len(self._scripts) == 1:
+            script = self._scripts[0]
+        else:
+            script = self._scripts.popleft()
         for factory in script:
             await asyncio.sleep(0)
             yield factory(generation_id, attempt_id)
@@ -110,12 +116,14 @@ class ConversationGenerator:
         ledger: BudgetLedger,
         current_generation: Callable[[], int],
         emit: FrameSink,
-        local_error_text: str = "抱歉\uff0c雲端回覆暫時中斷了。",
+        primary_model: ModelName | None = None,
+        local_error_text: str = "抱歉\uff0c回覆暫時中斷了。",
     ) -> None:
         self._providers = providers
         self._ledger = ledger
         self._current_generation = current_generation
         self._emit = emit
+        self._primary_model = primary_model
         self._local_error_text = local_error_text
 
     async def generate(
@@ -128,10 +136,21 @@ class ConversationGenerator:
         max_output_tokens: int = 192,
     ) -> GenerationResult:
         try:
-            reservation = self._ledger.reserve_conversation(
-                at=at,
-                max_input_tokens=max_input_tokens,
-                max_output_tokens=max_output_tokens,
+            # A pinned primary skips Terra/Luna selection entirely: the on-device
+            # composition has no second cloud tier to fall back to.
+            reservation = (
+                self._ledger.reserve_model(
+                    at=at,
+                    model=self._primary_model,
+                    max_input_tokens=max_input_tokens,
+                    max_output_tokens=max_output_tokens,
+                )
+                if self._primary_model is not None
+                else self._ledger.reserve_conversation(
+                    at=at,
+                    max_input_tokens=max_input_tokens,
+                    max_output_tokens=max_output_tokens,
+                )
             )
         except BudgetLocked:
             return GenerationResult("budget_locked", (), 0, "budget_locked")

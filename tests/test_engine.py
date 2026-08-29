@@ -194,3 +194,79 @@ async def test_engine_keeps_the_microphone_closed_on_builtin_output_and_after_sw
     assert engine.transport.microphone_enabled is False  # type: ignore[attr-defined]
     assert engine.pipeline.coordinator.cancel_events[-1].reason == "device_changed"  # type: ignore[attr-defined]
     await engine.close()  # type: ignore[attr-defined]
+
+
+class FailingHealthStreamOwner(RecordingStreamOwner):
+    """Report one input failure, the way a starved PortAudio callback does."""
+
+    def __init__(self, snapshot: DeviceSnapshot = HEADPHONES) -> None:
+        super().__init__(snapshot)
+        self.failures = 1
+
+    def consume_health(self) -> StreamOwnerHealth:
+        if self.failures:
+            self.failures -= 1
+            return StreamOwnerHealth(input_failed=True, output_failed=False)
+        return StreamOwnerHealth(input_failed=False, output_failed=False)
+
+
+@pytest.mark.asyncio
+async def test_dropped_input_rebuilds_without_cancelling_a_silent_generation(
+    tmp_path: Path,
+) -> None:
+    owner = FailingHealthStreamOwner()
+    engine, _stt = build_engine(tmp_path, owner)
+    await engine.start()  # type: ignore[attr-defined]
+    await engine.set_microphone(True)  # type: ignore[attr-defined]
+    generation = engine.pipeline.coordinator.generation_id  # type: ignore[attr-defined]
+
+    # Nobody is speaking, so a starved callback must not cancel the answer the
+    # recogniser is producing; it only has to restart the sample timeline.
+    await wait_until(lambda: len(owner.rebuilt) > 1)
+
+    assert engine.pipeline.coordinator.generation_id == generation  # type: ignore[attr-defined]
+    assert engine.pipeline.coordinator.cancel_events == ()  # type: ignore[attr-defined]
+    assert engine.transport.microphone_enabled is True  # type: ignore[attr-defined]
+    await engine.close()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_dropped_input_still_cancels_while_the_user_is_speaking(
+    tmp_path: Path,
+) -> None:
+    owner = RecordingStreamOwner()
+    engine, _stt = build_engine(tmp_path, owner)
+    await engine.start()  # type: ignore[attr-defined]
+    await engine.set_microphone(True)  # type: ignore[attr-defined]
+    generation = engine.pipeline.coordinator.generation_id  # type: ignore[attr-defined]
+
+    await feed(engine.transport, NATIVE_WINDOW * 11, 0)  # type: ignore[attr-defined]
+    await feed(engine.transport, NATIVE_WINDOW * 8, 8_000)  # type: ignore[attr-defined]
+    await wait_until(lambda: engine.pipeline.turn_gate.turn_active)  # type: ignore[attr-defined]
+
+    # Speech in progress is the user's next utterance, so the audio around the
+    # gap must not be spliced: this one still cancels.
+    engine.transport.mark_discontinuity()  # type: ignore[attr-defined]
+    await wait_until(
+        lambda: engine.pipeline.coordinator.generation_id > generation  # type: ignore[attr-defined]
+    )
+    assert engine.pipeline.coordinator.cancel_events[-1].reason == "stream_error"  # type: ignore[attr-defined]
+    await engine.close()  # type: ignore[attr-defined]
+
+
+def test_the_entry_point_only_opens_the_microphone_when_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lune import engine as engine_module
+
+    seen: list[tuple[bool, bool]] = []
+
+    async def fake_run(*, microphone: bool = False, ephemeral_memory: bool = False) -> int:
+        seen.append((microphone, ephemeral_memory))
+        return 0
+
+    monkeypatch.setattr(engine_module, "run", fake_run)
+    assert engine_module.main([]) == 0
+    assert engine_module.main(["--microphone", "--ephemeral-memory"]) == 0
+    # Cold start stays mic-off, and the private database stays the default.
+    assert seen == [(False, False), (True, True)]

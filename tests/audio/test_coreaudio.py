@@ -11,7 +11,9 @@ import pytest
 from lune.audio.coreaudio import (
     CoreAudioDeviceError,
     CoreAudioStreamOwner,
+    MicrophonePermissionError,
     NativeCoreAudioPropertyReader,
+    NativeMicrophoneAuthorizer,
     PortAudioBindings,
     UnsafeAudioOutputError,
 )
@@ -38,6 +40,40 @@ class FakeStream:
 
     def close(self) -> None:
         self.closed = True
+
+
+class AllowMicrophone:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def authorize(self) -> None:
+        self.calls += 1
+
+
+class FakeCaptureDevice:
+    status = 3
+    grant = True
+    requests = 0
+
+    @classmethod
+    def authorizationStatusForMediaType_(cls, media_type: object) -> int:
+        assert media_type == "audio"
+        return cls.status
+
+    @classmethod
+    def requestAccessForMediaType_completionHandler_(
+        cls, media_type: object, completion: Callable[[bool], None]
+    ) -> None:
+        assert media_type == "audio"
+        cls.requests += 1
+        completion(cls.grant)
+
+
+class FakeAVFoundation:
+    AVCaptureDevice = FakeCaptureDevice
+    AVMediaTypeAudio = "audio"
+    AVAuthorizationStatusNotDetermined = 0
+    AVAuthorizationStatusAuthorized = 3
 
 
 class BlockingStream(FakeStream):
@@ -156,6 +192,31 @@ def test_native_property_reader_uses_the_documented_coreaudio_selectors() -> Non
 
 
 @pytest.mark.asyncio
+async def test_microphone_authorizer_requests_only_when_status_is_not_determined() -> None:
+    FakeCaptureDevice.status = 3
+    FakeCaptureDevice.requests = 0
+    await NativeMicrophoneAuthorizer(FakeAVFoundation()).authorize()
+    assert FakeCaptureDevice.requests == 0
+
+    FakeCaptureDevice.status = 0
+    FakeCaptureDevice.grant = True
+    await NativeMicrophoneAuthorizer(FakeAVFoundation()).authorize()
+    assert FakeCaptureDevice.requests == 1
+
+
+@pytest.mark.asyncio
+async def test_microphone_authorizer_fails_closed_when_access_is_denied() -> None:
+    FakeCaptureDevice.status = 2
+    with pytest.raises(MicrophonePermissionError, match="microphone_permission_denied"):
+        await NativeMicrophoneAuthorizer(FakeAVFoundation()).authorize()
+
+    FakeCaptureDevice.status = 0
+    FakeCaptureDevice.grant = False
+    with pytest.raises(MicrophonePermissionError, match="microphone_permission_denied"):
+        await NativeMicrophoneAuthorizer(FakeAVFoundation()).authorize()
+
+
+@pytest.mark.asyncio
 async def test_construction_and_close_never_initialize_or_open_portaudio() -> None:
     calls = 0
 
@@ -187,22 +248,38 @@ async def test_default_query_resolves_indices_without_opening_a_stream() -> None
     assert host.opens == []
     await owner.rebuild_streams(snapshot)
     assert host.opens == []
+    cold = owner.status()
+    assert cold.host_active is True
+    assert cold.input_open is False
+    assert cold.output_open is False
     await owner.close()
     assert host.terminated is True
+    closed = owner.status()
+    assert closed.closed is True
+    assert closed.host_active is False
+    assert closed.input_open is False
+    assert closed.output_open is False
 
 
 @pytest.mark.asyncio
 async def test_input_callback_only_copies_current_mono_pcm_and_aborts_on_discontinuity() -> None:
     host = FakeHost()
     transport = LocalAudioTransport(max_callbacks=2)
+    authorizer = AllowMicrophone()
     owner = CoreAudioStreamOwner(
         transport,
         portaudio_factory=lambda: bindings(host),
         properties=FakeProperties(),
+        microphone_authorizer=authorizer,
     )
     snapshot = await owner.default_devices()
     await owner.rebuild_streams(snapshot)
     await owner.set_microphone(True)
+    assert authorizer.calls == 1
+    listening = owner.status()
+    assert listening.input_open is True
+    assert listening.input_sample_rate == 16_000
+    assert listening.input_channels == 1
     assert len(host.opens) == 1
     open_call = host.opens[0]
     assert open_call["input_device_index"] == 3
@@ -245,15 +322,19 @@ async def test_output_reuses_one_format_reopens_on_change_and_flushes() -> None:
     assert len(host.opens) == 1
     assert host.opens[0]["output_device_index"] == 8
     assert host.streams[0].writes == [
-        (mono.data, 12, True),
-        (mono.data, 12, True),
+        (mono.data, 12, False),
+        (mono.data, 12, False),
     ]
 
     await owner.write(stereo)
+    output = owner.status()
+    assert output.output_open is True
+    assert output.output_sample_rate == 48_000
+    assert output.output_channels == 2
     assert len(host.opens) == 2
     assert host.streams[0].stopped and host.streams[0].closed
     assert host.opens[1]["output_host_api_specific_stream_info"] == ("map", (0, 1))
-    assert host.streams[1].writes == [(stereo.data, 8, True)]
+    assert host.streams[1].writes == [(stereo.data, 8, False)]
 
     await owner.flush()
     assert host.streams[1].stopped and host.streams[1].closed
@@ -276,6 +357,9 @@ async def test_large_output_chunks_are_split_into_cancellation_sized_blocks() ->
     await owner.write(chunk)
 
     assert [write[1] for write in host.streams[0].writes] == [480, 480, 240]
+    # A device that drains faster than this writer refills it is a glitch to ride
+    # out, not a reason to tear the stream down in the middle of an answer.
+    assert [write[2] for write in host.streams[0].writes] == [False, False, False]
     await owner.close()
 
 

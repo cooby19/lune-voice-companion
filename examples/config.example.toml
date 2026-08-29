@@ -1,6 +1,9 @@
 schema_version = 1
 
 [models]
+# 測試階段固定使用本機 Qwen：不需要 API key、不連網、不產生費用。
+# 雲端就緒後改為 "openai_responses" 即可切回下面那組模型。
+provider = "local_qwen"
 primary = "gpt-5.6-terra"
 fallback = "gpt-5.6-luna"
 reasoning_effort = "none"

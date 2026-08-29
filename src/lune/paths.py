@@ -32,6 +32,10 @@ class LunePaths:
         return self.support / "lune.sqlite3"
 
     @property
+    def profile(self) -> Path:
+        return self.support / "profile.toml"
+
+    @property
     def whisper_manifest(self) -> Path:
         return self.support / "models" / "whisper" / "manifest.json"
 
@@ -40,8 +44,16 @@ class LunePaths:
         return self.support / "models" / "e5" / "manifest.json"
 
     @property
+    def local_llm_dir(self) -> Path:
+        return self.support / "models" / "qwen-local"
+
+    @property
     def local_llm_manifest(self) -> Path:
-        return self.support / "models" / "qwen-local" / "manifest.json"
+        return self.local_llm_dir / "manifest.json"
+
+    @property
+    def local_llm_runtime_python(self) -> Path:
+        return self.support / "models" / "qwen-runtime" / "bin" / "python"
 
     @property
     def tts_manifest(self) -> Path:

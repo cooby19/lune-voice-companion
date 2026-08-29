@@ -13,7 +13,7 @@ import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 
 from lune.llm_spike.cancellation import CancellationGate, CancelObservation, evaluate_cancellation
 from lune.llm_spike.fixtures import stability_prompts
@@ -29,54 +29,18 @@ from lune.llm_spike.performance import (
 from lune.llm_spike.sampling import ResourceSample, sample_resources
 from lune.llm_spike.thinking import ThinkingFilterResult, ThinkingGate, evaluate_thinking
 from lune.llm_spike.tools import (
+    AFFINITY_TOOL,
+    MEMORY_TOOL,
     ToolCallGate,
     ToolCallObservation,
     evaluate_tool_calls,
 )
 from lune.llm_spike.worker import GenerationOutcome, QwenWorkerHost
-from lune.memory.proposals import MEMORY_CATEGORIES
 
 SYSTEM_PROMPT: Final[str] = (
     "You are a concise voice assistant. Answer in one to three short sentences. "
     "Never include reasoning or analysis in your reply."
 )
-
-MEMORY_TOOL: Final[dict[str, Any]] = {
-    "type": "function",
-    "function": {
-        "name": "propose_memory",
-        "description": (
-            "Propose one durable fact worth remembering about the user. "
-            "Only stable preferences, important people or events, explicit plans, "
-            "or an explicit request to remember something."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "content": {"type": "string"},
-                "category": {"type": "string", "enum": sorted(MEMORY_CATEGORIES)},
-                "importance": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-            },
-            "required": ["content", "category", "importance"],
-        },
-    },
-}
-
-AFFINITY_TOOL: Final[dict[str, Any]] = {
-    "type": "function",
-    "function": {
-        "name": "propose_affinity",
-        "description": "Propose a one-point change to the relationship score.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "delta": {"type": "integer", "enum": [-1, 1]},
-                "reason": {"type": "string"},
-            },
-            "required": ["delta", "reason"],
-        },
-    },
-}
 
 TOOL_PROMPTS: Final[tuple[str, ...]] = (
     "記住我每週三晚上都要打羽球。",

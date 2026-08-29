@@ -12,7 +12,7 @@ import json
 import re
 import unicodedata
 from dataclasses import dataclass, field
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from lune.llm_spike.performance import MIN_STABILITY_TURNS
 from lune.llm_spike.tagscan import held_suffix
@@ -21,6 +21,45 @@ from lune.memory.proposals import MEMORY_CATEGORIES
 PROPOSE_MEMORY: Final[str] = "propose_memory"
 PROPOSE_AFFINITY: Final[str] = "propose_affinity"
 ALLOWED_TOOLS: Final[frozenset[str]] = frozenset({PROPOSE_MEMORY, PROPOSE_AFFINITY})
+
+MEMORY_TOOL: Final[dict[str, Any]] = {
+    "type": "function",
+    "function": {
+        "name": PROPOSE_MEMORY,
+        "description": (
+            "Propose one durable fact worth remembering about the user. "
+            "Only stable preferences, important people or events, explicit plans, "
+            "or an explicit request to remember something."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string"},
+                "category": {"type": "string", "enum": sorted(MEMORY_CATEGORIES)},
+                "importance": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            },
+            "required": ["content", "category", "importance"],
+        },
+    },
+}
+
+AFFINITY_TOOL: Final[dict[str, Any]] = {
+    "type": "function",
+    "function": {
+        "name": PROPOSE_AFFINITY,
+        "description": "Propose a one-point change to the relationship score.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "delta": {"type": "integer", "enum": [-1, 1]},
+                "reason": {"type": "string"},
+            },
+            "required": ["delta", "reason"],
+        },
+    },
+}
+"""The two schemas the model is offered. Declared beside the validator that checks
+their results, so a widened schema and an unchanged validator cannot drift apart."""
 
 MAX_ARGUMENTS_BYTES: Final[int] = 4 * 1024
 MAX_CONTENT_CHARS: Final[int] = 500

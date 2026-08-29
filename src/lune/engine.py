@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import signal
+import sys
 from collections.abc import Callable, Coroutine, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, TextIO
 
 from lune.audio.coreaudio import CoreAudioStreamOwner, StreamOwnerHealth
 from lune.audio.devices import DeviceSnapshot
@@ -15,11 +17,13 @@ from lune.audio.silero import SileroVoiceDetector
 from lune.audio.transport import LocalAudioTransport
 from lune.config import AppConfig, AudioConfig, PersonaKernel
 from lune.diagnostics import SafeDiagnostics
+from lune.ipc import UI_COMMAND_NAMES, UI_EVENT_NAMES, CommandRejected, JSONValue, LoopbackIPCServer
 from lune.keychain import get_openai_api_key
 from lune.llm.budget import BudgetLedger
-from lune.llm.contracts import ModelName
+from lune.llm.contracts import LOCAL_MODEL_NAME, ModelName
+from lune.llm.local_qwen import LocalQwenLLMService
 from lune.llm.prompt import build_persona_instruction
-from lune.llm.provider import LLMProviderFactory
+from lune.llm.provider import LLMProviderFactory, LocalQwenProviderConfig
 from lune.llm.streaming import AttemptStreamProvider
 from lune.memory.embedding import E5MemoryRetriever, LocalE5Encoder
 from lune.memory.store import MemoryStore
@@ -29,6 +33,7 @@ from lune.paths import LunePaths
 from lune.pipeline.coordinator import ProviderFence
 from lune.pipeline.factory import STTEventSink, VoicePipeline, build_voice_pipeline
 from lune.pipeline.pipecat_provider import PipecatAttemptProvider
+from lune.pipeline.playback import DEFAULT_CAPACITY
 from lune.pipeline.session import FinalOnlySTT
 from lune.pipeline.turn_gate import VoicedDetector
 from lune.readiness import AppState, check_readiness
@@ -36,6 +41,7 @@ from lune.stt.mlx import build_mlx_stt
 from lune.tts.contracts import PCMChunk
 from lune.tts.factory import build_tts_router
 from lune.tts.router import TTSRouterService
+from lune.ui.runtime import EngineControl, EngineFactory, UiCommandError, UiRuntime
 
 
 class AsyncCloser(Protocol):
@@ -48,6 +54,8 @@ class EngineStreamOwner(Protocol):
     async def rebuild_streams(self, snapshot: DeviceSnapshot) -> None: ...
 
     async def set_microphone(self, enabled: bool) -> None: ...
+
+    async def request_microphone_access(self) -> None: ...
 
     async def write(self, chunk: PCMChunk) -> None: ...
 
@@ -70,6 +78,7 @@ class EngineDependencies:
     providers: Mapping[ModelName, AttemptStreamProvider]
     ledger: BudgetLedger
     tts: TTSRouterService
+    primary_model: ModelName | None = None
     max_output_tokens: int = 192
     provider_fences: Sequence[ProviderFence] = ()
     provider_closers: Sequence[AsyncCloser] = ()
@@ -120,6 +129,32 @@ class VoiceEngine:
         return self.pipeline.session.state
 
     @property
+    def session_id(self) -> str | None:
+        """The persisted conversation currently bound to the live pipeline."""
+
+        return self._session_id
+
+    @property
+    def store(self) -> MemoryStore | None:
+        """The local store, exposed only to the authenticated in-process UI host."""
+
+        return self._store
+
+    @property
+    def microphone_requested(self) -> bool:
+        return self._microphone_requested
+
+    @property
+    def degraded_tts(self) -> bool:
+        return self.pipeline.session.degraded_tts
+
+    @property
+    def output_is_builtin(self) -> bool | None:
+        """Expose only the safe built-in-output category to the local UI."""
+
+        return self.pipeline.session.output_is_builtin
+
+    @property
     def background_task_count(self) -> int:
         return sum(not task.done() for task in self._tasks)
 
@@ -155,6 +190,39 @@ class VoiceEngine:
             await self.pipeline.coordinator.cancel("stream_error")
             raise
         return self.state
+
+    async def submit_text(self, text: str, *, speak_text: bool = True) -> AppState:
+        if not self._started or self._closed:
+            raise RuntimeError("engine is not running")
+        return await self.pipeline.session.submit_text(text, speak_text=speak_text)
+
+    async def request_microphone_access(self) -> None:
+        """Show the macOS permission prompt without enabling capture."""
+
+        if not self._started or self._closed:
+            raise RuntimeError("engine is not running")
+        await self.streams.request_microphone_access()
+
+    async def refresh_devices(self) -> AppState:
+        """Re-read the current defaults after an explicit UI recheck."""
+
+        if not self._started or self._closed:
+            raise RuntimeError("engine is not running")
+        async with self._device_lock:
+            snapshot = await self.streams.default_devices()
+            state = await self.pipeline.session.apply_default_devices(snapshot)
+            await self._sync_microphone(state)
+        return self.state
+
+    def select_thread(self, thread_id: str) -> None:
+        """Select an idle thread without rebuilding the model or audio pipeline."""
+
+        if not self._started or self._closed:
+            raise RuntimeError("engine is not running")
+        if self._microphone_requested:
+            raise RuntimeError("cannot switch conversation while a call is active")
+        self.pipeline.session.switch_thread(thread_id)
+        self._session_id = thread_id
 
     async def close(self) -> None:
         if self._closed:
@@ -261,7 +329,19 @@ class VoiceEngine:
 
     async def _recover_streams(self) -> None:
         async with self._device_lock:
-            await self.pipeline.coordinator.cancel("stream_error")
+            # Dropped input invalidates the sample timeline, not an answer that
+            # is already being generated. Cancelling unconditionally made a slow
+            # turn destroy itself on the target Mac: inference starved the input
+            # callback, the resulting overflow cancelled the very generation that
+            # inference was feeding, and nothing was ever spoken. Speech in
+            # progress still cancels, because that audio is the user's next
+            # utterance and must not be spliced across the gap.
+            if self.pipeline.turn_gate.turn_active:
+                await self.pipeline.coordinator.cancel("stream_error")
+            else:
+                # Same timeline reset the cancel path performs, without moving
+                # the fence: the cursor restarts, so the gate cannot splice.
+                self.transport.rebuild(generation_id=self.pipeline.coordinator.generation_id)
             try:
                 snapshot = await self.streams.default_devices()
                 await self.streams.rebuild_streams(snapshot)
@@ -278,7 +358,7 @@ def compose_voice_engine(
     *,
     transport: LocalAudioTransport | None = None,
     streams: EngineStreamOwner | None = None,
-    playback_capacity: int = 32,
+    playback_capacity: int = DEFAULT_CAPACITY,
     stt_timeout_s: float = 10.0,
     input_poll_s: float = 0.002,
     health_poll_s: float = 0.01,
@@ -304,6 +384,7 @@ def compose_voice_engine(
         provider_fences=dependencies.provider_fences,
         summarizer=dependencies.summarizer,
         rebuild_streams=stream_owner.rebuild_streams,
+        primary_model=dependencies.primary_model,
         transport=local_transport,
         audio=dependencies.audio,
         diagnostics=dependencies.diagnostics,
@@ -324,38 +405,119 @@ def compose_voice_engine(
     )
 
 
-async def build_default_engine(paths: LunePaths | None = None) -> VoiceEngine:
+@dataclass(frozen=True, slots=True)
+class _ProviderComposition:
+    """One provider set, already fenced and closeable, for a single composition."""
+
+    providers: Mapping[ModelName, AttemptStreamProvider]
+    fences: tuple[ProviderFence, ...]
+    closers: tuple[AsyncCloser, ...]
+    primary_model: ModelName | None = None
+
+
+def _cloud_composition(
+    *,
+    api_key: str,
+    system_instruction: str,
+    max_output_tokens: int,
+) -> _ProviderComposition:
+    pair = LLMProviderFactory().build_openai_pair(
+        api_key=api_key,
+        system_instruction=system_instruction,
+        max_output_tokens=max_output_tokens,
+    )
+    terra = PipecatAttemptProvider(model="gpt-5.6-terra", service=pair.primary)
+    luna = PipecatAttemptProvider(model="gpt-5.6-luna", service=pair.fallback)
+    return _ProviderComposition(
+        providers={"gpt-5.6-terra": terra, "gpt-5.6-luna": luna},
+        fences=(terra, luna),
+        closers=(terra, luna),
+    )
+
+
+async def _local_composition(
+    *,
+    paths: LunePaths,
+    system_instruction: str,
+    max_output_tokens: int,
+) -> _ProviderComposition:
+    """Build the on-device composition and load the weights before the first turn.
+
+    There is no second tier to fall back to, so the primary is pinned: the ledger
+    must not try to pick Terra or Luna for a composition that has neither.
+    """
+
+    service = LLMProviderFactory().build(
+        LocalQwenProviderConfig(
+            model_dir=paths.local_llm_dir,
+            runtime_python=paths.local_llm_runtime_python,
+            system_instruction=system_instruction,
+            max_output_tokens=max_output_tokens,
+        )
+    )
+    if not isinstance(service, LocalQwenLLMService):
+        raise RuntimeError("the local provider registry returned an unexpected service")
+    await service.preload()
+    provider = PipecatAttemptProvider(model=LOCAL_MODEL_NAME, service=service)
+    return _ProviderComposition(
+        providers={LOCAL_MODEL_NAME: provider},
+        fences=(provider,),
+        # The pipeline worker stops first; the weights are released only after
+        # nothing can still ask them for tokens.
+        closers=(provider, service),
+        primary_model=LOCAL_MODEL_NAME,
+    )
+
+
+async def build_default_engine(
+    paths: LunePaths | None = None,
+    *,
+    ephemeral_memory: bool = False,
+    session_id: str | None = None,
+) -> VoiceEngine:
     """Build production adapters; callers must authorize private/hardware use."""
 
     local_paths = paths or LunePaths.defaults()
     config = AppConfig.load(local_paths.config)
     persona = PersonaKernel.load(local_paths.persona)
-    api_key = get_openai_api_key()
-    if not api_key:
+    cloud = config.models.provider == "openai_responses"
+    api_key = (get_openai_api_key() or "") if cloud else ""
+    if cloud and not api_key:
         raise RuntimeError("setup_required")
     local_paths.ensure_private_directories()
-    store = MemoryStore(local_paths.database)
-    session_id = store.start_session()
+    # An ephemeral store keeps a shakedown conversation out of the real
+    # transcripts, memories and affinity history, which have no bulk delete.
+    store = MemoryStore.ephemeral() if ephemeral_memory else MemoryStore(local_paths.database)
+    if session_id is None:
+        active_session_id = store.start_session()
+    else:
+        if store.get_conversation_thread(session_id) is None:
+            store.close()
+            raise ValueError("unknown conversation thread")
+        active_session_id = session_id
     transport = LocalAudioTransport(
         sample_rate=config.audio.sample_rate,
         channels=config.audio.channels,
     )
     streams = CoreAudioStreamOwner(transport)
+    composition: _ProviderComposition | None = None
     try:
         retriever = E5MemoryRetriever(store, LocalE5Encoder(local_paths.e5_manifest))
         detector = SileroVoiceDetector(sample_rate=config.audio.sample_rate)
-        provider_factory = LLMProviderFactory()
-        pair = provider_factory.build_openai_pair(
-            api_key=api_key,
-            system_instruction=build_persona_instruction(persona),
-            max_output_tokens=config.models.max_output_tokens,
+        instruction = build_persona_instruction(persona)
+        composition = (
+            _cloud_composition(
+                api_key=api_key,
+                system_instruction=instruction,
+                max_output_tokens=config.models.max_output_tokens,
+            )
+            if cloud
+            else await _local_composition(
+                paths=local_paths,
+                system_instruction=instruction,
+                max_output_tokens=config.models.max_output_tokens,
+            )
         )
-        terra = PipecatAttemptProvider(model="gpt-5.6-terra", service=pair.primary)
-        luna = PipecatAttemptProvider(model="gpt-5.6-luna", service=pair.fallback)
-        providers: dict[ModelName, PipecatAttemptProvider] = {
-            "gpt-5.6-terra": terra,
-            "gpt-5.6-luna": luna,
-        }
 
         def stt_factory(emit: STTEventSink) -> FinalOnlySTT:
             return build_mlx_stt(
@@ -365,50 +527,218 @@ async def build_default_engine(paths: LunePaths | None = None) -> VoiceEngine:
             )
 
         dependencies = EngineDependencies(
-            session_id=session_id,
+            session_id=active_session_id,
             store=store,
             retriever=retriever,
             detector=detector,
             stt_factory=stt_factory,
-            providers=providers,
+            providers=composition.providers,
             ledger=persistent_budget_ledger(store, config.budget),
             tts=build_tts_router(config.tts, local_paths),
+            primary_model=composition.primary_model,
             max_output_tokens=config.models.max_output_tokens,
-            provider_fences=(terra, luna),
-            provider_closers=(terra, luna),
+            provider_fences=composition.fences,
+            provider_closers=composition.closers,
             audio=config.audio,
         )
         return compose_voice_engine(dependencies, transport=transport, streams=streams)
     except BaseException:
+        # A local composition has already spawned its worker by this point, so
+        # failing later must not leave the weights resident.
+        if composition is not None:
+            for closer in composition.closers:
+                with suppress(Exception):
+                    await closer.close()
         await streams.close()
         store.close()
         raise
 
 
-async def run() -> int:
+async def run(*, microphone: bool = False, ephemeral_memory: bool = False) -> int:
     paths = LunePaths.defaults()
     readiness = check_readiness(paths)
     if readiness.state == "setup_required":
+        _report("setup_required", reasons=[reason for reason in readiness.reasons])
         return 2
     engine: VoiceEngine | None = None
     try:
-        engine = await build_default_engine(paths)
-        await engine.start()
+        engine = await build_default_engine(paths, ephemeral_memory=ephemeral_memory)
+        _report(await engine.start())
+        if microphone:
+            # The UI normally sends `set_microphone`; until it exists this flag
+            # is the only way to hold a conversation. Cold start stays mic-off.
+            _report(await engine.set_microphone(True))
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for signum in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(signum, stop.set)
         await stop.wait()
         return 0
-    except Exception:
+    except Exception as error:
+        # The type name only: a message could carry a private path.
+        _report("error", reasons=[type(error).__name__])
         return 3
     finally:
         if engine is not None:
             await engine.close()
 
 
-def main() -> int:
-    return asyncio.run(run())
+async def run_ui_ipc(
+    paths: LunePaths | None = None,
+    *,
+    engine_factory: EngineFactory | None = None,
+    handoff_stream: TextIO | None = None,
+    snapshot_interval_s: float = 0.2,
+    install_signal_handlers: bool = True,
+) -> int:
+    """Run the engine child behind the authenticated local Web UI protocol.
+
+    The one-time handoff is the only stdout output in this mode.  It is meant
+    solely for the pywebview parent process; application state and private text
+    travel over the authenticated WebSocket instead of a process log.
+    """
+
+    if snapshot_interval_s <= 0:
+        raise ValueError("snapshot interval must be positive")
+    local_paths = paths or LunePaths.defaults()
+    host_loop = asyncio.get_running_loop()
+    host_stop: asyncio.Future[None] = host_loop.create_future()
+
+    def request_host_stop() -> None:
+        """Resolve the host-owned shutdown future exactly once.
+
+        The IPC command handler is deliberately decoupled from the supervisor
+        task: it only resolves this future, so the ``shutdown`` command and a
+        terminating signal both reach the single cleanup block below.
+        """
+
+        if not host_stop.done():
+            host_stop.set_result(None)
+
+    async def build_engine() -> EngineControl:
+        if engine_factory is not None:
+            return await engine_factory()
+        return await build_default_engine(local_paths)
+
+    runtime = UiRuntime(local_paths, build_engine)
+    server: LoopbackIPCServer | None = None
+
+    async def handle_ui_command(command: str, params: Mapping[str, JSONValue]) -> JSONValue:
+        try:
+            result = await runtime.handle(command, params)
+        except UiCommandError as error:
+            # Detailed application codes are intentionally not a wire contract:
+            # they may reveal whether a private setup artifact exists.
+            del error
+            raise CommandRejected("command_rejected") from None
+        if command == "shutdown":
+            # Wake the supervisor without closing the server in this handler:
+            # `_dispatch` still owns the final result frame.
+            request_host_stop()
+        return result
+
+    server = LoopbackIPCServer(
+        handle_ui_command,
+        command_names=UI_COMMAND_NAMES,
+        event_names=UI_EVENT_NAMES,
+    )
+    startup_task: asyncio.Task[None] | None = None
+    broadcaster: asyncio.Task[None] | None = None
+    try:
+        connection = await server.start()
+        _write_ui_handoff(connection.handshake_json(), handoff_stream or sys.stdout)
+        # Starting can preload a local model.  Hand the shell its credential
+        # first so it can show a responsive, private-data-free preparing state.
+        startup_task = asyncio.create_task(runtime.start(), name="lune-ui-startup")
+        broadcaster = asyncio.create_task(
+            _broadcast_ui_snapshots(server, runtime, snapshot_interval_s),
+            name="lune-ui-snapshots",
+        )
+        if install_signal_handlers:
+            _install_ui_signal_handlers(request_host_stop)
+        # The command handler schedules this after runtime has accepted the
+        # shutdown request.  Signals use the same path, so both closures reach
+        # the single cleanup block below.
+        await host_stop
+        return 0
+    except Exception:
+        # The desktop parent treats missing/invalid handoff as startup failure.
+        # Never print an exception here: paths and model details are private.
+        return 3
+    finally:
+        for task in (broadcaster, startup_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(task for task in (broadcaster, startup_task) if task is not None),
+            return_exceptions=True,
+        )
+        await server.close()
+        await runtime.close()
+
+
+async def _broadcast_ui_snapshots(
+    server: LoopbackIPCServer,
+    runtime: UiRuntime,
+    interval_s: float,
+) -> None:
+    """Push only changed, bounded snapshots to the authenticated WebView."""
+
+    previous: dict[str, JSONValue] | None = None
+    while not runtime.shutdown_requested and server.running:
+        snapshot = runtime.snapshot()
+        if snapshot != previous:
+            await server.broadcast("snapshot", snapshot)
+            previous = snapshot
+        await asyncio.sleep(interval_s)
+
+
+def _write_ui_handoff(payload: str, stream: TextIO) -> None:
+    """Write exactly one compact private handshake line to the inherited pipe."""
+
+    stream.write(payload + "\n")
+    stream.flush()
+
+
+def _install_ui_signal_handlers(request_stop: Callable[[], None]) -> None:
+    """Ask the child to close cleanly when its parent is terminated."""
+
+    loop = asyncio.get_running_loop()
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        with suppress(NotImplementedError, RuntimeError):
+            loop.add_signal_handler(signum, request_stop)
+
+
+def _report(state: str, *, reasons: Sequence[str] = ()) -> None:
+    """Print bounded state, never transcripts, prompts or private paths."""
+
+    line = state if not reasons else f"{state}: {', '.join(reasons)}"
+    print(line, flush=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="lune-engine")
+    parser.add_argument(
+        "--microphone",
+        action="store_true",
+        help="open the microphone once the engine is listening",
+    )
+    parser.add_argument(
+        "--ephemeral-memory",
+        action="store_true",
+        help="keep this session out of the private database",
+    )
+    parser.add_argument(
+        "--ui-ipc",
+        action="store_true",
+        help="serve the authenticated local Web UI child protocol",
+    )
+    args = parser.parse_args(argv)
+    if args.ui_ipc:
+        if args.microphone or args.ephemeral_memory:
+            parser.error("--ui-ipc cannot be combined with microphone or ephemeral-memory")
+        return asyncio.run(run_ui_ipc())
+    return asyncio.run(run(microphone=args.microphone, ephemeral_memory=args.ephemeral_memory))
 
 
 if __name__ == "__main__":
