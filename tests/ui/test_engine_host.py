@@ -174,11 +174,12 @@ async def test_ui_ipc_child_hands_off_once_serves_status_and_closes_cleanly(tmp_
             await socket.send(
                 json.dumps({"type": "command", "id": "stop", "command": "shutdown", "params": {}})
             )
-            reply = json.loads(await asyncio.wait_for(socket.recv(), timeout=0.5))
-            assert reply["type"] == "result"
-            assert reply["id"] == "stop"
+            # The reconciling pump runs on its own task, so a snapshot event
+            # can land between the command and its answer.  Every other test
+            # here already reads results that way.
+            reply = await asyncio.wait_for(_receive_result(socket, "stop"), timeout=1.0)
             assert reply["result"]["shutdown"] is True
-        # The shutdown result is the last frame; the host then closes on its own.
+        # The host then closes on its own.
         assert await asyncio.wait_for(child, timeout=2.0) == 0
     finally:
         # Never leave the host task behind when an assertion above failed: an

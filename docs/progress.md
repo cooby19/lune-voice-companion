@@ -325,6 +325,54 @@ P3 已完成的 `thread_updated`，payload 與 snapshot 用同一份 `_thread_vi
 所以測試不受影響）。**未執行**：沒有真的開過視窗看這顆標記，前端沒有測試框架，
 `app.js` 只能靠讀取實體檔案的契約測試守住。
 
+## setup 畫面的四項缺陷（2026-08-30）
+
+第一次啟動的畫面有四個各自獨立、疊在一起就讓 setup 幾乎不能用的缺陷。四項都先在本機重現，
+再修，再以同一套工具比對修前修後。
+
+| 缺陷 | 成因 | 改動 |
+|---|---|---|
+| 「正在取得 Lune 的目前狀態…」膠囊不會消失，`aria-busy` 恆為 `true` | 兩處相加：`_broadcast_ui_state` 在還沒有任何已認證 client 時就把對帳基準推進，setup 期間狀態靜止就再也不送 snapshot；而 `app.js` 的 result 分支雖然套用了 snapshot，卻不設 `state.ready`、不清連線文字 | `src/lune/engine.py`：沒送到任何人的 frame 不算基準；`src/lune/ui/static/app.js`：整包 snapshot 一律走新的 `acceptSnapshot()` |
+| 步驟 4 永遠打不開 | `canOpenSetupStep()` 要求 local／models／persona 三組 reason 全清才准開，但那三組一清 `check_readiness` 就沒有 reason，state 變 `mic_off`，整個 setup 畫面消失 | 移除該 gate；步驟列每一顆按鈕都可點 |
+| 步驟 4／5 永遠標不成完成 | 兩步沒有 reason code，`complete` 由 runtime 給，而 `microphone` 是 `pending`、`voice` 是 `optional`，`complete` 恆為 `false` | 拿掉 client 端自己發明的 `AUDIO_REASONS` 與 `setupAudioConfirmed`，完成與否一律以 runtime 的 `complete` 為準（現況即為「未完成」，見下） |
+| 840／600 兩條響應式規則從未生效 | `app.css` 兩處選 `.setup-step-list`，元素實際是 `class="step-list"`，同名的是 `id` | 改選 `.step-list` |
+
+### 步驟 4 不是「修好就能完成」
+
+setup 刻意不建立 engine，而麥克風權限請求由 engine 發出，所以那顆「允許麥克風並繼續」在
+setup 畫面上必然失敗——步驟 4 打得開之後，它會是一顆按下去只會跳錯誤的按鈕。因此該卡改成
+說明卡加一顆「再檢查一次裝置」（`check_audio_devices` 在沒有 engine 時會退回重新檢查
+readiness），權限本身照 runtime 的步驟文案，在第一次通話時請求。要讓步驟 4 能在 setup 期間
+真的完成，需要一條不依賴 engine 的權限路徑，那會改動裝置行為；已列入 `docs/ui-spec.md`
+〈尚未決定〉，未自行裁決。
+
+原始回報還指「`setup.steps` 的 wire 形狀是 list、client 當 dict 取，伺服器算好的 `complete`
+從來沒被讀到」。**這一項不成立**：`normalizeSetupSteps()` 會把 list 依 id 轉成 dict
+（`local_runtime`→`local`、`microphone`→`audio`），`complete` 也確實被讀。以抽出的真實函式
+餵入「reason 還在、但 `complete: true`」的步驟，`isSetupStepComplete()` 回 `true`，證明讀的是
+伺服器算好的值而不是 reason 回推。真正成立的只有它的後半段——步驟 4／5 標不成完成。
+
+### Gate
+
+602 項完整 pytest 通過（新增 5 項：1 項對帳基準、4 項讀取實體靜態檔的契約），Ruff lint／format、
+mypy、secret scan、`git diff --check` 全綠。五項新測試都先在修正前的檔案上跑過並全數失敗。
+
+`tests/ui/test_engine_host.py` 的 shutdown 回覆改用該檔案其他測試已經在用的 `_receive_result()`：
+client 現在真的會收到它本來就該收到的那份 snapshot，對帳事件因此可能夾在命令與回覆之間，
+原本「shutdown 的 result 一定是最後一個 frame」的假設不再成立。這是修正的後果，不是放寬門檻——
+斷言的內容沒有變。
+
+`lune self-test` 與 `import py2app; import lune.app; import lune.engine` 這次不需要 `PYTHONPATH=src`：
+先跑 `chflags -R nohidden .venv` 就會通過。上一則〈Gate〉記的那個現象是同一件事，
+不是 editable 安裝壞掉。
+
+前端這次不只有契約測試：以本機臨時目錄的假 readiness 產生 snapshot，用真正的
+`LoopbackIPCServer` 與真正的 `src/lune/ui/static/`（`__LUNE_BOOTSTRAP__` 開發鉤子）在瀏覽器
+比對修前修後——修前 `aria-busy="true"`、膠囊停在「正在取得 Lune 的目前狀態…」、步驟 4
+`disabled`、820 px 單欄；修後 `aria-busy="false"`、膠囊清空、步驟 4／5 可開，820 px 兩欄、
+590 px 單欄。**未執行**：這不是 pywebview 視窗，桌面殼的實機 gate 仍未跑；也沒有動麥克風、
+私人 persona 或任何私人資料。
+
 ## 後續交接
 
 M2、M3、M4、M5、M6 的 public gate 與本地 LLM spike 的完整 gate（含實機延遲、記憶體、取消、

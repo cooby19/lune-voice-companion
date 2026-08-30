@@ -27,16 +27,22 @@ RECONCILE_S = 0.02
 
 
 class FakeBroadcastServer:
-    """Record what reached the wire, in the order the pump produced it."""
+    """Record what reached the wire, in the order the pump produced it.
 
-    def __init__(self) -> None:
+    ``clients`` is how many authenticated peers the real server would have.
+    Zero is the state the shell starts in: the pump is already running while
+    the WebView is still authenticating.
+    """
+
+    def __init__(self, clients: int = 1) -> None:
         self.frames: list[tuple[str, dict[str, JSONValue]]] = []
         self.running = True
+        self.clients = clients
 
     async def broadcast(self, event: str, payload: object) -> BroadcastResult:
         assert isinstance(payload, dict)
         self.frames.append((event, payload))
-        return BroadcastResult(attempted=1, delivered=1, dropped=0)
+        return BroadcastResult(attempted=self.clients, delivered=self.clients, dropped=0)
 
     def names(self) -> list[str]:
         return [name for name, _payload in self.frames]
@@ -153,6 +159,34 @@ async def test_a_turn_costs_three_events_and_no_extra_snapshot(tmp_path: Path) -
         # that follow have nothing left to correct.
         await asyncio.sleep(RECONCILE_S * 8)
         assert len(harness.server.frames) == 4
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_nobody_received_is_not_a_baseline(tmp_path: Path) -> None:
+    """The frame that goes out before the WebView has authenticated.
+
+    A setup screen produces no further change to broadcast, so counting that
+    unheard frame as the baseline left the client that connected a moment
+    later with no state at all — on screen, a permanent
+    「正在取得 Lune 的目前狀態…」 capsule over the setup card.
+    """
+
+    harness = await _harness(tmp_path)
+    harness.server.clients = 0
+    harness.start()
+    try:
+        # Unheard, so the pump keeps offering the same state.
+        await _wait_for_frames(harness.server, 3)
+        assert set(harness.server.names()) == {"snapshot"}
+
+        harness.server.clients = 1
+        await _wait_for_frames(harness.server, len(harness.server.frames) + 1)
+        # And once it lands the baseline holds again: no needless repeats.
+        settled = len(harness.server.frames)
+        await asyncio.sleep(RECONCILE_S * 8)
+        assert len(harness.server.frames) == settled
     finally:
         await harness.close()
 

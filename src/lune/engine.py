@@ -742,6 +742,11 @@ async def _broadcast_ui_state(
     nothing.  Any dropped event clears the baseline instead, which turns the
     next tick into a full correction.
 
+    A frame nobody received advances nothing.  The WebView authenticates after
+    the engine has started, so the first snapshot is usually broadcast to an
+    empty room; treating it as a baseline left a client that arrived during a
+    motionless setup screen with no state at all.
+
     ``server.broadcast`` drops a peer that cannot keep up rather than waiting on
     it, so a stalled WebView cannot hold this loop or the engine behind it.
     """
@@ -756,16 +761,16 @@ async def _broadcast_ui_state(
                 previous = None
             snapshot = runtime.snapshot()
             if snapshot != previous:
-                await server.broadcast("snapshot", snapshot)
-                previous = snapshot
+                result = await server.broadcast("snapshot", snapshot)
+                previous = snapshot if result.delivered else None
             deadline = loop.time() + reconcile_interval_s
             continue
         try:
             event, payload = await asyncio.wait_for(events.get(), timeout=timeout)
         except TimeoutError:
             continue
-        await server.broadcast(event, payload)
-        previous = runtime.snapshot()
+        result = await server.broadcast(event, payload)
+        previous = runtime.snapshot() if result.delivered else None
 
 
 def _write_ui_handoff(payload: str, stream: TextIO) -> None:

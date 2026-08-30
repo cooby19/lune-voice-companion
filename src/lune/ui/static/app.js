@@ -9,7 +9,6 @@
     "persona_invalid",
     "persona_unconfigured",
   ]);
-  const AUDIO_REASONS = new Set(["microphone_permission_missing", "headphones_missing"]);
   const CONFIG_REASONS = new Set(["config_missing", "config_invalid"]);
 
   const STATUS_COPY = {
@@ -101,7 +100,6 @@
     pendingForgetId: null,
     pendingRenameThreadId: null,
     setupStepOverride: null,
-    setupAudioConfirmed: false,
     messageScrolls: new Map(),
     websocket: null,
     bootstrap: null,
@@ -499,7 +497,6 @@
 
     if (next.setup === null) {
       state.setupStepOverride = null;
-      state.setupAudioConfirmed = false;
     } else if (
       state.setupStepOverride &&
       isSetupStepComplete(state.setupStepOverride, next.setup)
@@ -1504,14 +1501,15 @@
     for (const step of setupSteps) {
       const complete = isSetupStepComplete(step.id, setup);
       const active = !complete && currentStep === step.id;
-      const available = canOpenSetupStep(step.id, setup);
       const listItem = element("li", {
         className: `setup-step${complete ? " is-complete" : ""}${active ? " is-active" : ""}`,
       });
+      // Every step stays openable.  The old gate asked for the local, model
+      // and persona reasons to be clear at once, which is exactly the state
+      // that ends setup: step 4 could be listed but never opened.
       const button = element("button", {
         className: "setup-step-button",
         type: "button",
-        disabled: !available,
         dataset: { action: "select-setup-step", setupStep: step.id },
         attrs: { "aria-current": active ? "step" : null },
       });
@@ -1535,8 +1533,7 @@
     if (
       requested &&
       setupSteps.some((step) => step.id === requested) &&
-      !isSetupStepComplete(requested, setup) &&
-      canOpenSetupStep(requested, setup)
+      !isSetupStepComplete(requested, setup)
     ) {
       return requested;
     }
@@ -1570,24 +1567,9 @@
     if (id === "persona") {
       return ![...PERSONA_REASONS].some((reason) => reasons.has(reason));
     }
-    if (id === "audio") {
-      return (
-        state.setupAudioConfirmed ||
-        (![...AUDIO_REASONS].some((reason) => reasons.has(reason)) &&
-          boolValue(step.complete, false))
-      );
-    }
+    // Steps 4 and 5 have no reason code of their own, so the only honest
+    // source for them is the `complete` flag the runtime computes.
     return boolValue(firstValue(step.complete, step.completed, step.skipped), false);
-  }
-
-  function canOpenSetupStep(id, setup) {
-    if (id !== "audio") {
-      return true;
-    }
-    const reasons = new Set(asArray(setup.reasons));
-    return ![...LOCAL_LLM_REASONS, ...MODEL_REASONS, ...PERSONA_REASONS].some((reason) =>
-      reasons.has(reason),
-    );
   }
 
   function setupProgressFor(id, setup) {
@@ -1612,7 +1594,7 @@
       case "persona":
         return renderSetupPersonaCard();
       case "audio":
-        return renderSetupAudioCard(setup);
+        return renderSetupAudioCard();
       case "voice":
         return renderSetupVoiceCard(setup);
       case "local":
@@ -1740,26 +1722,25 @@
     return card;
   }
 
-  function renderSetupAudioCard(setup) {
-    const available = canOpenSetupStep("audio", setup);
+  function renderSetupAudioCard() {
+    // Setup deliberately runs without an engine, and the macOS permission
+    // prompt belongs to it, so this card explains what will happen on the
+    // first call instead of offering a button that could only fail here.
     const card = setupCard(
       "讓你們好好聽見彼此",
-      available
-        ? "冷啟動時麥克風是關的。這裡只會請求權限，不會開始收音。"
-        : "先完成本機模型與人格設定；準備好後，這裡才會請求麥克風權限。",
+      "冷啟動時麥克風是關的。等你按下「打給 Lune」，她才會向 macOS 要求麥克風權限。",
     );
     card.append(
       element("ul", { className: "setup-detail-list" }, [
-        element("li", {}, [element("span", { text: "1" }), "確認麥克風權限已允許。"]),
-        element("li", {}, [element("span", { text: "2" }), "接上耳機；用內建喇叭時，她會自動暫停避免聽見自己。"]),
+        element("li", {}, [element("span", { text: "1" }), "先接上耳機；用內建喇叭時，她會自動暫停避免聽見自己。"]),
+        element("li", {}, [element("span", { text: "2" }), "第一次通話時 macOS 會問一次麥克風權限，答應之後就不會再問。"]),
       ]),
       element("div", { className: "form-actions" }, [
         element("button", {
           className: "button-quiet",
           type: "button",
-          disabled: !available,
-          text: "允許麥克風並繼續",
-          dataset: { action: "status-command", command: "request_microphone_access" },
+          text: "再檢查一次裝置",
+          dataset: { action: "status-command", command: "check_audio_devices" },
         }),
       ]),
     );
@@ -1931,8 +1912,7 @@
         break;
       case "select-setup-step": {
         const step = normalizeSetupStepId(actionElement.dataset.setupStep);
-        const setup = state.snapshot.setup;
-        if (step && setup && canOpenSetupStep(step, setup)) {
+        if (step && state.snapshot.setup) {
           state.setupStepOverride = step;
           renderSetup();
         }
@@ -1999,22 +1979,7 @@
     if (!command) {
       return;
     }
-    const options =
-      command === "request_microphone_access"
-        ? {
-            onSuccess: () => {
-              state.setupAudioConfirmed = true;
-              if (state.snapshot.setup) {
-                state.setupStepOverride = "voice";
-                renderSetup();
-              }
-            },
-          }
-        : {};
-    const id = sendCommand(command, {}, options);
-    if (id && command === "request_microphone_access") {
-      showToast("正在請求麥克風權限；這不會開始收音。");
-    }
+    sendCommand(command, {});
   }
 
   function handleSubmit(event) {
@@ -2269,9 +2234,7 @@
     }
     const type = stringValue(message.type).toLowerCase();
     if (type === "snapshot") {
-      state.ready = true;
-      setConnectionText("", "connected");
-      applySnapshot(firstValue(message.snapshot, message.payload, message));
+      acceptSnapshot(firstValue(message.snapshot, message.payload, message));
       return;
     }
     if (type === "event") {
@@ -2295,9 +2258,9 @@
       // reconciling tick, so a bare snapshot is recognised by its own shape.
       const bareSnapshot = isSnapshotShape(message.result) ? message.result : null;
       if (message.snapshot || message.payload?.snapshot || message.result?.snapshot) {
-        applySnapshot(message.snapshot || message.payload?.snapshot || message.result.snapshot);
+        acceptSnapshot(message.snapshot || message.payload?.snapshot || message.result.snapshot);
       } else if (bareSnapshot) {
-        applySnapshot(bareSnapshot);
+        acceptSnapshot(bareSnapshot);
       } else if (pending?.command === "search_memories" && Array.isArray(message.result?.results)) {
         state.searchResults = message.result.results.map(normalizeMemory);
         if (state.activeView === "memories") {
@@ -2312,15 +2275,23 @@
       return;
     }
     if (type === "hello" && (message.snapshot || message.payload)) {
-      state.ready = true;
-      setConnectionText("", "connected");
-      applySnapshot(message.snapshot || message.payload);
+      acceptSnapshot(message.snapshot || message.payload);
       return;
     }
     if (type === "hello_ack") {
       setConnectionText("正在取得 Lune 的目前狀態…");
       sendCommand("get_status", {});
     }
+  }
+
+  function acceptSnapshot(rawSnapshot) {
+    // Every whole snapshot means this client is caught up, whichever channel
+    // carried it.  The reply to `get_status` is the only one a motionless
+    // setup screen ever gets, so leaving `ready` false here kept the "正在取得
+    // Lune 的目前狀態…" capsule and `aria-busy="true"` on screen for good.
+    state.ready = true;
+    setConnectionText("", "connected");
+    applySnapshot(rawSnapshot);
   }
 
   function refreshBootstrapAfterDisconnect() {

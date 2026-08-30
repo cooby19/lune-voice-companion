@@ -1654,7 +1654,7 @@ input[type="range"] {
     margin-top: 46px;
   }
 
-  .setup-step-list {
+  .step-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1734,7 +1734,7 @@ input[type="range"] {
     padding: 22px 18px 44px;
   }
 
-  .setup-step-list {
+  .step-list {
     display: grid;
     grid-template-columns: 1fr;
   }
