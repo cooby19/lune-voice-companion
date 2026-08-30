@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from lune.audio.devices import DeviceInfo, DeviceSnapshot
 from lune.audio.transport import LocalAudioTransport
@@ -44,6 +44,11 @@ class MicrophonePermissionError(CoreAudioDeviceError):
     """macOS did not grant microphone capture permission in bounded time."""
 
 
+# What TCC currently says.  "unavailable" is the honest answer when the
+# framework is missing rather than a claim about the user's decision.
+MicrophoneAuthorizationStatus = Literal["authorized", "denied", "undetermined", "unavailable"]
+
+
 class MicrophoneAuthorizer(Protocol):
     async def authorize(self) -> None: ...
 
@@ -57,19 +62,34 @@ class NativeMicrophoneAuthorizer:
         self._avfoundation = avfoundation
         self._timeout_s = timeout_s
 
-    async def authorize(self) -> None:
-        av = self._avfoundation
+    def status(self) -> MicrophoneAuthorizationStatus:
+        """Read the current decision without ever showing the system prompt.
+
+        The onboarding screen reads this on every readiness refresh, so it has
+        to stay a pure query: ``authorizationStatus`` never prompts, and a
+        missing framework is reported rather than raised.
+        """
+
+        av = self._framework()
         if av is None:
-            try:
-                import AVFoundation  # type: ignore[import-untyped]
-            except ImportError as error:  # pragma: no cover - required on supported macOS
-                raise MicrophonePermissionError("microphone_authorization_unavailable") from error
-            av = AVFoundation
-            self._avfoundation = av
+            return "unavailable"
         status = int(av.AVCaptureDevice.authorizationStatusForMediaType_(av.AVMediaTypeAudio))
         if status == int(av.AVAuthorizationStatusAuthorized):
+            return "authorized"
+        if status == int(av.AVAuthorizationStatusNotDetermined):
+            return "undetermined"
+        # Denied and restricted are the same thing here: this process cannot
+        # change it, and only System Settings can.
+        return "denied"
+
+    async def authorize(self) -> None:
+        av = self._framework()
+        if av is None:  # pragma: no cover - required on supported macOS
+            raise MicrophonePermissionError("microphone_authorization_unavailable")
+        status = self.status()
+        if status == "authorized":
             return
-        if status != int(av.AVAuthorizationStatusNotDetermined):
+        if status != "undetermined":
             raise MicrophonePermissionError("microphone_permission_denied")
 
         loop = asyncio.get_running_loop()
@@ -92,6 +112,15 @@ class NativeMicrophoneAuthorizer:
             raise MicrophonePermissionError("microphone_permission_timeout") from error
         if not granted:
             raise MicrophonePermissionError("microphone_permission_denied")
+
+    def _framework(self) -> Any | None:
+        if self._avfoundation is None:
+            try:
+                import AVFoundation  # type: ignore[import-untyped]
+            except ImportError:  # pragma: no cover - required on supported macOS
+                return None
+            self._avfoundation = AVFoundation
+        return self._avfoundation
 
 
 class _AudioObjectPropertyAddress(ctypes.Structure):

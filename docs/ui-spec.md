@@ -250,13 +250,18 @@ downloader，所以介面只能指出缺什麼、指向哪個目錄，不能代�
 `persona_unconfigured` 代表使用者仍在 example persona 上，計畫明文禁止偷偷套用，
 因此此步驟不可跳過。
 
-**步驟 4 與 5 在 setup 期間只是說明（2026-08-30，待裁決）。** setup 刻意不建立 engine，
-而 macOS 的麥克風權限請求由 engine 的 CoreAudio authorizer 發出，所以原本那顆「允許麥克風
-並繼續」在這個畫面上必然失敗。實作已改為說明卡加一顆「再檢查一次裝置」，權限本身照
-`src/lune/ui/runtime.py` 步驟 4 的文案，在第一次按下「打給 Lune」時請求。這兩步也沒有自己的
-reason code，`complete` 恆為 `false`，因此步驟列不會出現 ✓，而三步做完的下一刻 readiness
-就沒有 reason、整個 setup 畫面結束。要讓步驟 4 真的能在 setup 期間完成，需要一條不依賴
-engine 的權限請求路徑；那會改動裝置行為，屬於未定的產品決策。
+**步驟 4 自己要權限（2026-08-30 定案，見 `project-decisions.md`）。** setup 刻意不建立
+engine，所以這一步不經過 engine：`UiRuntime` 直接持有 `MicrophonePermission`，按下「允許
+麥克風」就是 AVFoundation 的權限請求，**不會開始收音**。卡片依 macOS 當下的回答換文案：
+`undetermined` 給「允許麥克風」，`authorized` 說已允許，`denied` 指向「系統設定 → 隱私權與
+安全性 → 麥克風」且不再給一顆按不動的按鈕，`unavailable` 退回「第一次通話時還是會問一次」。
+步驟 4 因此是唯一一個完成與否由 macOS 決定、而不是由 reason code 推導的步驟；`authorized`
+才算 `complete`，步驟列才出現 ✓。
+
+步驟 5 沒有 reason code 也沒有 macOS 狀態可讀，`complete` 恆為 `false`，是刻意的：聲線是選配，
+跳過就跳過。做完前三步的下一刻 readiness 就沒有 reason、整個 setup 畫面結束，所以步驟 4 與 5
+都可能在使用者還沒點進去之前就沒機會顯示；兩者都可以從步驟列自由點開，完成過的步驟也可以
+再點回去看。
 
 ### 文案要點
 
@@ -387,8 +392,6 @@ hybrid：OpenAI 為主，本機為備援。
 - 訊息上「她想起了一件事」標記**點擊後**的行為。資料鏈已接，標記會真的出現，但點下去目前只切到
   記憶面板、不高亮任何一筆（`app.js` 的 `show-memories` 分支收下 `memoryId` 卻沒有用）。
   要做高亮就得連同記憶面板的 16 筆上限一起決定：超出上限的記憶就算被標記指到，也不在那份清單裡。
-- setup 期間是否要提供一條不依賴 engine 的麥克風權限請求，讓步驟 4 能真的完成並顯示 ✓。
-  **實作目前照「不要」執行**，理由與後果見〈五步 + 一個選配〉。
 - 應用程式圖示與選單列圖示的視覺設計。
 - 異常狀態的兩組文案是否要真的分開。〈狀態表〉為每個狀態各寫了「通話列文案」與「橫幅文案」，
   但 `app.js` 的 `STATUS_COPY` 每個狀態只有一組 `label`／`subtitle`，兩處共用。實機上

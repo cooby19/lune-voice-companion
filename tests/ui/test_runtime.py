@@ -5,11 +5,35 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from lune.audio.coreaudio import MicrophonePermissionError
 from lune.config import AppConfig, PersonaKernel
 from lune.memory.store import EMBEDDING_DIMENSIONS, MemoryStore
 from lune.paths import LunePaths
 from lune.readiness import Readiness
 from lune.ui.runtime import UiCommandError, UiRuntime
+
+
+class FakePermission:
+    """TCC without macOS: no framework, no prompt, no dependence on this Mac."""
+
+    def __init__(self, status: str = "undetermined", *, grant: bool = True) -> None:
+        self._status = status
+        self._grant = grant
+        self.requests = 0
+
+    def status(self) -> str:
+        return self._status
+
+    async def authorize(self) -> None:
+        self.requests += 1
+        if self._status == "authorized":
+            return
+        if self._status != "undetermined":
+            raise MicrophonePermissionError("microphone_permission_denied")
+        if not self._grant:
+            self._status = "denied"
+            raise MicrophonePermissionError("microphone_permission_denied")
+        self._status = "authorized"
 
 
 class FakeEngine:
@@ -101,7 +125,9 @@ async def _runtime(tmp_path: Path) -> tuple[UiRuntime, FakeEngine]:
     async def build() -> FakeEngine:
         return engine
 
-    runtime = UiRuntime(paths, build, readiness_checker=_ready)
+    runtime = UiRuntime(
+        paths, build, readiness_checker=_ready, microphone_permission=FakePermission()
+    )
     await runtime.start()
     return runtime, engine
 
@@ -211,7 +237,9 @@ async def test_forget_memory_requires_exact_ui_confirmation(tmp_path: Path) -> N
         await runtime.close()
 
 
-async def _setup_runtime(tmp_path: Path, *reasons: str) -> UiRuntime:
+async def _setup_runtime(
+    tmp_path: Path, *reasons: str, permission: FakePermission | None = None
+) -> UiRuntime:
     """A runtime stopped at setup, so no engine and no private data are needed."""
 
     paths = LunePaths(support=tmp_path / "support", logs=tmp_path / "logs")
@@ -222,7 +250,12 @@ async def _setup_runtime(tmp_path: Path, *reasons: str) -> UiRuntime:
     def blocked(_paths: LunePaths) -> Readiness:
         return Readiness("setup_required", reasons)
 
-    runtime = UiRuntime(paths, build, readiness_checker=blocked)
+    runtime = UiRuntime(
+        paths,
+        build,
+        readiness_checker=blocked,
+        microphone_permission=permission or FakePermission(),
+    )
     await runtime.start()
     return runtime
 
@@ -268,5 +301,84 @@ async def test_a_readable_config_leaves_the_numbered_steps_alone(tmp_path: Path)
         assert setup is not None
         assert setup["current_step"] == "persona"
         assert all(str(step["id"]) != "repair" for step in setup["steps"])
+    finally:
+        await runtime.close()
+
+
+def _microphone_step(setup: object) -> dict[str, object]:
+    assert isinstance(setup, dict)
+    steps = setup["steps"]
+    assert isinstance(steps, list)
+    return next(step for step in steps if step["id"] == "microphone")
+
+
+@pytest.mark.asyncio
+async def test_setup_can_request_the_microphone_without_an_engine(tmp_path: Path) -> None:
+    """Step 4 asks TCC directly.
+
+    Setup deliberately never builds an engine, so borrowing the engine's
+    authorizer left this step with nothing it could do; granting permission is
+    also the only thing that can mark it complete, since it has no reason code.
+    """
+
+    permission = FakePermission("undetermined")
+    runtime = await _setup_runtime(tmp_path, "persona_unconfigured", permission=permission)
+    try:
+        before = runtime.snapshot()["setup"]
+        assert isinstance(before, dict)
+        assert before["microphone_permission"] == "undetermined"
+        assert _microphone_step(before)["status"] == "pending"
+
+        after = await runtime.handle("request_microphone_access", {})
+        assert permission.requests == 1
+        setup = after["setup"]
+        assert isinstance(setup, dict)
+        assert setup["microphone_permission"] == "authorized"
+        step = _microphone_step(setup)
+        assert step["status"] == "complete"
+        assert step["complete"] is True
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_microphone_is_reported_as_state_not_as_a_fault(tmp_path: Path) -> None:
+    """A refusal is something the card has to explain, not a failed command.
+
+    The error code never crosses the IPC, so raising here would only produce a
+    generic toast and leave the card claiming the prompt is still available.
+    """
+
+    permission = FakePermission("undetermined", grant=False)
+    runtime = await _setup_runtime(tmp_path, "persona_unconfigured", permission=permission)
+    try:
+        after = await runtime.handle("request_microphone_access", {})
+        setup = after["setup"]
+        assert isinstance(setup, dict)
+        assert setup["microphone_permission"] == "denied"
+        assert _microphone_step(setup)["status"] == "pending"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_permission_never_takes_the_shell_down(tmp_path: Path) -> None:
+    """A missing framework is not a reason to lose the whole setup screen."""
+
+    class Broken:
+        def status(self) -> str:
+            raise RuntimeError("no framework here")
+
+        async def authorize(self) -> None:
+            raise RuntimeError("no framework here")
+
+    runtime = await _setup_runtime(tmp_path, "persona_unconfigured")
+    runtime.microphone_permission = Broken()  # type: ignore[assignment]
+    try:
+        await runtime.refresh_setup()
+        setup = runtime.snapshot()["setup"]
+        assert isinstance(setup, dict)
+        assert setup["microphone_permission"] == "unavailable"
+        assert _microphone_step(setup)["status"] == "pending"
     finally:
         await runtime.close()

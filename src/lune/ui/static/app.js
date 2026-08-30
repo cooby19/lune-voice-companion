@@ -292,6 +292,10 @@
             currentStep: stringValue(
               firstValue(setupRaw.current_step, setupRaw.currentStep),
             ),
+            microphonePermission: stringValue(
+              firstValue(setupRaw.microphone_permission, setupRaw.microphonePermission),
+              "unavailable",
+            ),
           }
         : null,
       app: {
@@ -499,8 +503,13 @@
       state.setupStepOverride = null;
     } else if (
       state.setupStepOverride &&
-      isSetupStepComplete(state.setupStepOverride, next.setup)
+      isSetupStepComplete(state.setupStepOverride, next.setup) &&
+      previous.setup &&
+      !isSetupStepComplete(state.setupStepOverride, previous.setup)
     ) {
+      // Move on only when the step being looked at is the one that just
+      // completed -- granting the microphone, say.  Clearing it on every
+      // snapshot would drag the user off a finished step they reopened.
       state.setupStepOverride = null;
     }
 
@@ -1530,11 +1539,9 @@
 
   function getSetupCurrentStep(setup) {
     const requested = state.setupStepOverride;
-    if (
-      requested &&
-      setupSteps.some((step) => step.id === requested) &&
-      !isSetupStepComplete(requested, setup)
-    ) {
+    // A finished step is still worth reading, so an explicit click opens it.
+    // `applySnapshot` is what moves the user on when one completes under them.
+    if (requested && setupSteps.some((step) => step.id === requested)) {
       return requested;
     }
     state.setupStepOverride = null;
@@ -1594,7 +1601,7 @@
       case "persona":
         return renderSetupPersonaCard();
       case "audio":
-        return renderSetupAudioCard();
+        return renderSetupAudioCard(setup);
       case "voice":
         return renderSetupVoiceCard(setup);
       case "local":
@@ -1722,27 +1729,44 @@
     return card;
   }
 
-  function renderSetupAudioCard() {
-    // Setup deliberately runs without an engine, and the macOS permission
-    // prompt belongs to it, so this card explains what will happen on the
-    // first call instead of offering a button that could only fail here.
-    const card = setupCard(
-      "讓你們好好聽見彼此",
-      "冷啟動時麥克風是關的。等你按下「打給 Lune」，她才會向 macOS 要求麥克風權限。",
+  const MICROPHONE_CARD_COPY = {
+    // Onboarding asks TCC directly, so the card says what macOS has already
+    // decided rather than promising something the first call will do.
+    undetermined: "這裡只會向 macOS 要求權限，不會開始收音；冷啟動時麥克風仍然是關的。",
+    authorized: "麥克風權限已經允許了。冷啟動時她仍然不收音，要等你按下「打給 Lune」。",
+    denied: "macOS 目前擋著麥克風。到「系統設定 → 隱私權與安全性 → 麥克風」把 Lune 打開，再回來按一次檢查。",
+    unavailable: "現在讀不到麥克風權限狀態；第一次通話時 macOS 還是會問一次。",
+  };
+
+  function renderSetupAudioCard(setup) {
+    const permission = stringValue(setup.microphonePermission, "unavailable");
+    const copy = MICROPHONE_CARD_COPY[permission] || MICROPHONE_CARD_COPY.unavailable;
+    const card = setupCard("讓你們好好聽見彼此", copy);
+    const actions = element("div", { className: "form-actions" });
+    if (permission === "undetermined") {
+      actions.append(
+        element("button", {
+          className: "button-quiet",
+          type: "button",
+          text: "允許麥克風",
+          dataset: { action: "status-command", command: "request_microphone_access" },
+        }),
+      );
+    }
+    actions.append(
+      element("button", {
+        className: permission === "undetermined" ? "button-text" : "button-quiet",
+        type: "button",
+        text: "再檢查一次裝置",
+        dataset: { action: "status-command", command: "check_audio_devices" },
+      }),
     );
     card.append(
       element("ul", { className: "setup-detail-list" }, [
         element("li", {}, [element("span", { text: "1" }), "先接上耳機；用內建喇叭時，她會自動暫停避免聽見自己。"]),
-        element("li", {}, [element("span", { text: "2" }), "第一次通話時 macOS 會問一次麥克風權限，答應之後就不會再問。"]),
+        element("li", {}, [element("span", { text: "2" }), "答應權限不會開始通話，也不會有任何音訊被送出這台電腦。"]),
       ]),
-      element("div", { className: "form-actions" }, [
-        element("button", {
-          className: "button-quiet",
-          type: "button",
-          text: "再檢查一次裝置",
-          dataset: { action: "status-command", command: "check_audio_devices" },
-        }),
-      ]),
+      actions,
     );
     return card;
   }
@@ -1979,7 +2003,10 @@
     if (!command) {
       return;
     }
-    sendCommand(command, {});
+    const id = sendCommand(command, {});
+    if (id && command === "request_microphone_access") {
+      showToast("正在請求麥克風權限；這不會開始收音。");
+    }
   }
 
   function handleSubmit(event) {

@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import get_args
 
 import pytest
 
 import lune.ui
-from lune.ui.runtime import UiCommandError
+from lune.audio.coreaudio import MicrophoneAuthorizationStatus
 from tests.ui.test_runtime import _setup_runtime
 
 STATIC = Path(lune.ui.__file__).parent / "static"
@@ -86,19 +87,40 @@ def test_every_setup_step_stays_openable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_setup_card_offers_a_command_setup_cannot_run(tmp_path: Path) -> None:
-    """Setup deliberately runs without an engine, so it must not need one."""
+async def test_every_command_the_setup_cards_offer_runs_without_an_engine(tmp_path: Path) -> None:
+    """Setup deliberately runs without an engine, so it must not need one.
 
-    runtime = await _setup_runtime(tmp_path, "persona_unconfigured")
-    try:
-        with pytest.raises(UiCommandError):
-            await runtime.handle("request_microphone_access", {})
-    finally:
-        await runtime.close()
+    Step 4's own button is the reason this is checked from both ends: it used
+    to call a command only a running engine could serve, which is why the card
+    ended up with nothing it could do.
+    """
 
     source = _asset("app.js")
     cards = source[source.index("function renderSetup(") : source.index("function statusFor(")]
-    assert "request_microphone_access" not in cards
+    offered = set(re.findall(r'command: "([a-z_]+)"', cards))
+    assert "request_microphone_access" in offered
+
+    runtime = await _setup_runtime(tmp_path, "persona_unconfigured")
+    try:
+        for command in sorted(offered):
+            await runtime.handle(command, {})
+    finally:
+        await runtime.close()
+
+
+def test_the_audio_card_has_copy_for_every_permission_state_the_runtime_sends() -> None:
+    """Step 4 now reports a macOS decision, so every decision needs an answer.
+
+    A missing key would silently fall back to the "cannot read it" copy and
+    tell the user the opposite of what macOS actually said.
+    """
+
+    source = _asset("app.js")
+    start = source.index("const MICROPHONE_CARD_COPY = {")
+    block = source[start : source.index("\n  };", start)]
+    assert set(re.findall(r"^\s{4}([a-z]+):", block, re.M)) == set(
+        get_args(MicrophoneAuthorizationStatus)
+    )
 
 
 def test_every_whole_snapshot_marks_the_client_ready() -> None:

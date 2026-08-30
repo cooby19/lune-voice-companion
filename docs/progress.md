@@ -373,6 +373,42 @@ client 現在真的會收到它本來就該收到的那份 snapshot，對帳事�
 590 px 單欄。**未執行**：這不是 pywebview 視窗，桌面殼的實機 gate 仍未跑；也沒有動麥克風、
 私人 persona 或任何私人資料。
 
+## 步驟 4 自己向 macOS 要麥克風權限（2026-08-30）
+
+前一則留在〈尚未決定〉的那個問題，使用者裁決為「要做」：setup 期間就能請求麥克風權限，
+不必等到第一次通話。決策全文與理由見 `docs/project-decisions.md`〈setup 期間的麥克風權限〉。
+
+| 位置 | 改動 |
+|---|---|
+| `src/lune/audio/coreaudio.py` | `NativeMicrophoneAuthorizer.status()`：純查詢、永不跳提示、缺框架回 `unavailable`；`authorize()` 改用同一個讀取 |
+| `src/lune/ui/runtime.py` | 新的 `MicrophonePermission` 契約與注入點；`refresh_setup()` 快取狀態；沒有 engine 時直接請求；`microphone` 步驟的 `status` 與 `setup.microphone_permission` 由 macOS 決定 |
+| `src/lune/ui/static/app.js` | 步驟 4 依 `undetermined`／`authorized`／`denied`／`unavailable` 換文案與按鈕；完成過的步驟可以再點回去看 |
+
+### 三件刻意的取捨
+
+- **權限請求不等於開始收音。** 這條路徑不建立 PortAudio input，也不碰 `set_microphone`。
+  真的要通話仍然要走 `set_microphone`，它會重新 authorize、失敗就關門，所以被拒絕過的權限
+  不可能靠步驟 4 這顆按鈕繞過。冷啟動麥克風關閉的不變式沒有變。
+- **拒絕是狀態，不是錯誤。** 應用層錯誤碼依設計不跨 IPC，拋出只會換來一句通用失敗提示，
+  畫面還是宣稱可以按。改成把 `denied` 放進 snapshot，卡片直接改口指向系統設定，並且不再
+  給一顆按不動的按鈕。
+- **完成過的步驟可以再點回去。** 步驟 4 一旦允許就變成 ✓，原本的規則會讓它再也打不開，
+  「已經允許了」那段文案等於死碼。改成只有「正在看的那一步剛好完成」才自動往前帶
+  （允許權限之後會自己跳回還沒做完的步驟 2），使用者主動點回去則留在原地。
+
+### Gate
+
+608 項完整 pytest 通過（新增 6 項），Ruff lint／format、mypy、secret scan、`lune self-test`、
+`import py2app; import lune.app; import lune.engine`、`git diff --check` 全綠。
+
+前端同樣用上一則那套本機假殼比對（真 `LoopbackIPCServer`、真 `UiRuntime`、假 readiness、
+**假權限物件**，因此不會有任何真的 macOS 提示）：`undetermined` 給「允許麥克風」，按下去後
+步驟 4 變 ✓ 並自動跳回步驟 2，再點回步驟 4 會停在「已經允許了」不被對帳 tick 拉走；
+`denied` 只剩「再檢查一次裝置」與指向系統設定的文案。
+
+**未執行**：沒有跑過真正的 macOS 權限提示（那是實體 gate，需要另行授權），也沒有開過
+pywebview 視窗。`NativeMicrophoneAuthorizer.status()` 在本機與 CI 都只被當成純查詢呼叫。
+
 ## 後續交接
 
 M2、M3、M4、M5、M6 的 public gate 與本地 LLM spike 的完整 gate（含實機延遲、記憶體、取消、

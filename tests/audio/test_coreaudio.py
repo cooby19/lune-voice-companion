@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import ctypes
 import threading
 from collections.abc import Callable, Mapping
@@ -202,6 +203,50 @@ async def test_microphone_authorizer_requests_only_when_status_is_not_determined
     FakeCaptureDevice.grant = True
     await NativeMicrophoneAuthorizer(FakeAVFoundation()).authorize()
     assert FakeCaptureDevice.requests == 1
+
+
+def test_microphone_status_reads_the_decision_without_ever_prompting() -> None:
+    """Onboarding reads this on every refresh, so it must not be a request.
+
+    The prompt is shown once by macOS and never again, so a status read that
+    quietly asked for access would spend that one chance behind the user's
+    back.
+    """
+
+    FakeCaptureDevice.requests = 0
+    authorizer = NativeMicrophoneAuthorizer(FakeAVFoundation())
+
+    FakeCaptureDevice.status = 3
+    assert authorizer.status() == "authorized"
+    FakeCaptureDevice.status = 0
+    assert authorizer.status() == "undetermined"
+    FakeCaptureDevice.status = 2
+    assert authorizer.status() == "denied"
+    # Restricted is not the user's decision either, and this process cannot
+    # change it, so it reads the same as denied.
+    FakeCaptureDevice.status = 1
+    assert authorizer.status() == "denied"
+
+    assert FakeCaptureDevice.requests == 0
+
+
+@pytest.mark.asyncio
+async def test_a_missing_framework_reads_as_unavailable_and_still_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The status read reports it; the request still refuses."""
+
+    real_import = builtins.__import__
+
+    def fake_import(name: str, *args: object, **kwargs: object) -> object:
+        if name == "AVFoundation":
+            raise ImportError("no AVFoundation here")
+        return real_import(name, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    assert NativeMicrophoneAuthorizer().status() == "unavailable"
+    with pytest.raises(MicrophonePermissionError, match="microphone_authorization_unavailable"):
+        await NativeMicrophoneAuthorizer().authorize()
 
 
 @pytest.mark.asyncio

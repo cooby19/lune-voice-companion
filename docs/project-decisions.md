@@ -225,6 +225,25 @@
 - 延遲數字必須連同當時的電源模式與系統負載一起引用。實測低電量模式會讓 Whisper 暖狀態從
   1,826–1,889 ms 變成 6,676–7,290 ms，與程式無關。
 
+## setup 期間的麥克風權限（2026-08-30 由使用者決定）
+
+- **步驟 4 自己向 macOS 要求麥克風權限**，不再等到第一次通話。onboarding 刻意不建立 engine，
+  所以這條路徑不經過 engine：`UiRuntime` 直接持有一個 `MicrophonePermission`
+  （預設為 `NativeMicrophoneAuthorizer`），呼叫的是 AVFoundation 的
+  `requestAccessForMediaType_`。
+- **權限請求不等於開始收音。** 這條路徑不建立 PortAudio input、不進 `set_microphone`，
+  冷啟動麥克風關閉的不變式不變。實際開始通話仍然要再走一次 `set_microphone`，它會重新
+  authorize、失敗就關門，所以拒絕過的權限不可能靠這顆按鈕繞過去。
+- **狀態用讀的，不用猜的。** `authorizationStatusForMediaType_` 是純查詢、永遠不會跳提示，
+  每次 `refresh_setup()` 讀一次並快取。步驟 4 因此成為唯一一個「完成與否由 macOS 決定、
+  而不是由 reason code 推導」的步驟：`authorized` 才是 `complete`。
+- **拒絕是狀態，不是錯誤。** `request_microphone_access` 在被拒時不再拋出：應用層錯誤碼
+  依設計不跨 IPC（見 `src/lune/engine.py` 的 `handle_ui_command`），拋出只會換來一句通用
+  的失敗提示，而畫面仍舊宣稱可以按。改為把 `denied` 放進 snapshot，卡片直接改口告訴使用者
+  要去「系統設定 → 隱私權與安全性 → 麥克風」。
+- **讀不到權限時不猜。** 缺少 AVFoundation 或讀取失敗一律是 `unavailable`：不宣稱使用者
+  拒絕過，也不宣稱已允許，步驟維持未完成。
+
 ## 私人資料
 
 - 私人資料根目錄：`~/Library/Application Support/Lune/`。

@@ -10,6 +10,11 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
+from lune.audio.coreaudio import (
+    MicrophoneAuthorizationStatus,
+    MicrophonePermissionError,
+    NativeMicrophoneAuthorizer,
+)
 from lune.config import (
     AppConfig,
     Boundaries,
@@ -96,6 +101,18 @@ class EngineControl(Protocol):
     async def close(self) -> None: ...
 
 
+class MicrophonePermission(Protocol):
+    """The macOS microphone decision, readable and requestable without an engine.
+
+    Onboarding runs before any engine exists, so step 4 cannot borrow the
+    engine's authorizer.  Neither method opens a capture stream.
+    """
+
+    def status(self) -> MicrophoneAuthorizationStatus: ...
+
+    async def authorize(self) -> None: ...
+
+
 type EngineFactory = Callable[[], Awaitable[EngineControl]]
 type ReadinessChecker = Callable[[LunePaths], Readiness]
 # An incremental UI event and its already-bounded payload.  A sink is called
@@ -122,7 +139,13 @@ class UiRuntime:
     monotonic: Callable[[], float] = time.monotonic
     readiness_checker: ReadinessChecker = check_readiness
     event_sink: UiEventSink | None = None
+    microphone_permission: MicrophonePermission = field(
+        default_factory=NativeMicrophoneAuthorizer, repr=False
+    )
     _engine: EngineControl | None = field(init=False, default=None, repr=False)
+    _microphone_status: MicrophoneAuthorizationStatus = field(
+        init=False, default="unavailable", repr=False
+    )
     _readiness: Readiness | None = field(init=False, default=None, repr=False)
     _active_thread_id: str | None = field(init=False, default=None)
     _call_thread_id: str | None = field(init=False, default=None)
@@ -181,6 +204,7 @@ class UiRuntime:
         """Refresh opaque readiness and start the engine only when it is safe."""
 
         self._readiness = self.readiness_checker(self.paths)
+        self._microphone_status = self._read_microphone_status()
         if self._readiness.state == "setup_required" or self._engine is not None:
             self._load_local_preferences()
             return
@@ -410,8 +434,10 @@ class UiRuntime:
             {
                 "id": "microphone",
                 "title": "麥克風與耳機",
-                "detail": "等你按下「打給 Lune」時才會要求麥克風；內建喇叭會先暫停收音。",
-                "status": "pending",
+                "detail": "可以先在這裡允許麥克風；Lune 只要權限，不會開始收音。",
+                # The only step whose completion is a macOS decision rather
+                # than a reason code, so it is read from TCC, not inferred.
+                "status": "complete" if self._microphone_status == "authorized" else "pending",
             },
             {
                 "id": "voice",
@@ -446,6 +472,7 @@ class UiRuntime:
             "reasons": list(readiness.reasons),
             "steps": [dict(step) for step in steps],
             "current_step": current,
+            "microphone_permission": self._microphone_status,
             "local_only": True,
         }
         return view
@@ -619,15 +646,36 @@ class UiRuntime:
     async def _request_microphone_access(self) -> None:
         """Show macOS's permission prompt without leaving a call active.
 
-        This is only reached from an explicit UI click.  The engine delegates to
-        its CoreAudio authorizer, which does not open the microphone stream.
+        This is only reached from an explicit UI click.  Onboarding runs before
+        any engine exists, so step 4 asks TCC directly; a running engine keeps
+        using its own authorizer.  Neither path opens the microphone stream.
+
+        A refusal is an outcome, not a fault: it is reported as the snapshot's
+        microphone permission so the card can say what to do about it, and
+        nothing can start a call on it either way, because ``set_microphone``
+        authorizes again and fails closed.
         """
 
-        engine = self._require_engine()
+        engine = self._engine
         try:
-            await engine.request_microphone_access()
+            if engine is None:
+                await self.microphone_permission.authorize()
+            else:
+                await engine.request_microphone_access()
+        except MicrophonePermissionError:
+            pass
         except RuntimeError as error:
             raise UiCommandError("microphone_unavailable") from error
+        finally:
+            self._microphone_status = self._read_microphone_status()
+
+    def _read_microphone_status(self) -> MicrophoneAuthorizationStatus:
+        """Read the decision, never prompting and never taking the shell down."""
+
+        try:
+            return self.microphone_permission.status()
+        except Exception:
+            return "unavailable"
 
     async def _check_audio_devices(self) -> None:
         engine = self._engine
