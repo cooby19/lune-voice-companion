@@ -16,6 +16,7 @@ from lune.llm.contracts import ModelName, ProviderStreamFrame
 from lune.llm.streaming import ScriptedAttemptProvider, StreamFrameFactory
 from lune.memory.embedding import E5_MODEL_ID, E5_MODEL_REVISION, E5MemoryRetriever
 from lune.memory.store import EMBEDDING_DIMENSIONS, MemoryStore
+from lune.memory.titles import ThreadTitleBackend, ThreadTitleManager
 from lune.pipeline.factory import VoicePipeline, build_voice_pipeline
 from lune.stt.contracts import FinalTranscript, STTEvent, STTFailure, TranscriptionRequest
 from lune.tts.contracts import PCMChunk, StreamingTTSBackend, TTSBackendError, TTSRequest
@@ -188,6 +189,7 @@ def build_harness(
     playback_capacity: int = 32,
     stt_timeout_s: float = 10.0,
     sample_clock: object | None = None,
+    title_backend: ThreadTitleBackend | None = None,
 ) -> Harness:
     from tests.pipeline.conftest import RecordingOutputDevice
 
@@ -223,6 +225,7 @@ def build_harness(
         tts=router,
         output_device=device,
         provider_fences=(fence,),
+        titler=None if title_backend is None else ThreadTitleManager(store, title_backend),
         playback_capacity=playback_capacity,
         stt_timeout_s=stt_timeout_s,
         sample_clock=sample_clock,  # type: ignore[arg-type]

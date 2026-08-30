@@ -224,6 +224,51 @@ TTFA。與既有拆解一致：瓶頸是 Whisper 的固定 30 秒 mel window，�
 - 硬體與私人模型報告只在本機產生；除非先完成淨化，否則不進版控。
 - 每個里程碑必須先通過該階段 gate、更新本文件、建立可回退 commit 並 push，才進入下一階段。
 
+## thread 自動標題接上管線（2026-08-30）
+
+`docs/ui-spec.md` 的〈已定案的決策〉要求 thread 標題在第一輪結束後自動生成一次、可手動改名，
+且測試階段由本機模型生成、不得為此另開一次雲端請求。在此之前只有 store 層的
+`set_generated_conversation_title()` 存在，整個 `src/` 沒有任何呼叫端。本次把這條線接起來。
+
+| 位置 | 角色 |
+|---|---|
+| `src/lune/memory/titles.py` | `ThreadTitleManager`，決定何時嘗試、如何清理輸出、何時放棄 |
+| `src/lune/llm/titles.py` | `LocalQwenTitleBackend`，把該輪對話交給已載入的本機 worker |
+| `src/lune/llm/local_qwen.py` | 新增 `complete_once()`，同一個 worker 的線外生成 |
+| `src/lune/pipeline/session.py` | `name_thread_if_due()`，掛在 turn 完成路徑 |
+
+### 觸發點與取消語意
+
+觸發點放在 `_finish_turn()` 內 `outcome == "completed"` 之後、`summarize_if_due()` 之前，此時
+狀態已經寫回 idle，所以標題生成不會把 session 留在 `thinking`，也不會讓麥克風繼續套用插話門檻。
+它仍在 turn task 內被 await，關閉流程照原本方式取消它。
+
+fence 用的是**賺到這一輪的 generation**，不是當下的 generation。取消一次會前進 fence，因此
+在模型還在選字時插話，寫入前的第二次 fence 檢查就會擋掉——與取消的一輪不留逐字稿是同一個規則。
+`ThreadTitleManager` 只在「標題仍是 default」且「恰好一輪 complete」時嘗試，所以是一次，
+不是每輪一次；失敗與取消都不寫入，預設標題原樣保留，對話流程不受影響。
+
+### 為什麼不是另開一次請求
+
+本機只有一個 worker 行程、一次一個 generation。`complete_once()` 因此與 turn 路徑共用同一把
+鎖、不推任何 pipeline frame（句子閘與 TTS 看不到它）、不帶 proposal tools；而且 turn 永遠優先
+——新的 generation 進來會先取消背景生成再取用 worker，被取消的標題回傳空字串。測試階段的成本
+因此是零，且整段標題文字沒有離開這台機器。
+
+雲端組成刻意仍不帶 title backend（`_cloud_composition()` 回傳 `title_backend=None`）。最終形態
+要由備援模型在自己的請求內順帶產生，在那之前寧可留著預設標題，也不偷買第二次雲端請求。
+
+### UI 通道
+
+標題寫入成功時 store 會發出既有的 `StoreChange("thread")`，`UiRuntime._change_events()` 把它變成
+P3 已完成的 `thread_updated`，payload 與 snapshot 用同一份 `_thread_view`，因此不需要新事件。
+
+### Gate
+
+完整 pytest 576 項通過（新增 26 項），Ruff lint／format、mypy、secret scan、import／self-test、
+`git diff --check` 全綠。**未執行**：沒有實際用 `Qwen3.5-4B` Q4 跑過一次真實標題生成，所以標題
+品質、生成耗時，以及插話搶回 worker 的實機時序都尚未量測。
+
 ## 後續交接
 
 M2、M3、M4、M5、M6 的 public gate 與本地 LLM spike 的完整 gate（含實機延遲、記憶體、取消、

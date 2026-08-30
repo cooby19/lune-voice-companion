@@ -8,6 +8,9 @@ the tokens differs.
 Nothing here relaxes the worker's boundary. The weights stay in a separate process with an
 allowlisted, forced-offline environment, thinking text is filtered before it can reach the
 sentence gate, and ``<tool_call>`` blocks are lifted out of the stream rather than spoken.
+
+One worker serves one generation at a time, so the out-of-band :meth:`complete_once` (the
+thread title) shares this service's lock and always yields to an arriving turn.
 """
 
 from __future__ import annotations
@@ -65,6 +68,8 @@ class LocalQwenLLMService(LLMService):
         self._tools = tuple(tools)
         self._started = False
         self._active_generation: int | None = None
+        self._background_generation: int | None = None
+        self._worker_lock = asyncio.Lock()
 
     async def preload(self) -> None:
         """Load the weights before the first turn so it is not charged the load time."""
@@ -91,7 +96,58 @@ class LocalQwenLLMService(LLMService):
             return
         await self.push_frame(frame, direction)
 
+    async def complete_once(
+        self,
+        *,
+        messages: Sequence[Mapping[str, str]],
+        max_tokens: int = 32,
+    ) -> str:
+        """Answer one off-path question on the loaded worker, pushing no frames.
+
+        This exists so features that need a sentence of local text -- naming a
+        thread, today -- can reuse the weights the turn path already paid for
+        instead of opening a request of their own.  Nothing is pushed
+        downstream, so the sentence gate and TTS never see it, and the turn path
+        outranks it: an arriving generation cancels this one first, and an
+        interruption cancels it like any other.  A cancelled or failed
+        completion returns an empty string rather than raising, because its
+        caller must never be able to fail a conversation.
+        """
+
+        if not messages:
+            raise ValueError("a local completion needs at least one message")
+        if not 1 <= max_tokens <= 192:
+            raise ValueError("M3 output limit must be between one and 192 tokens")
+        async with self._worker_lock:
+            await self.preload()
+            generation_id = self._host.advance_generation()
+            self._active_generation = generation_id
+            self._background_generation = generation_id
+            try:
+                outcome = await self._host.generate(
+                    generation_id=generation_id,
+                    request_id=uuid4().hex,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                )
+            except asyncio.CancelledError:
+                await self._cancel_active()
+                raise
+            except WorkerError:
+                return ""
+            finally:
+                self._active_generation = None
+                self._background_generation = None
+        return outcome.text if outcome.status == "completed" else ""
+
     async def _generate(self, context: LLMContext) -> None:
+        # A turn never queues behind background work: it stops it first, then
+        # takes the worker as soon as the cancel is acknowledged.
+        await self._preempt_background()
+        async with self._worker_lock:
+            await self._generate_turn(context)
+
+    async def _generate_turn(self, context: LLMContext) -> None:
         await self.preload()
         generation_id = self._host.advance_generation()
         self._active_generation = generation_id
@@ -140,6 +196,12 @@ class LocalQwenLLMService(LLMService):
 
     async def _push_text(self, text: str) -> None:
         await self.push_frame(LLMTextFrame(text=text))
+
+    async def _preempt_background(self) -> None:
+        """Stop an out-of-band completion so a real turn is not queued behind it."""
+
+        if self._background_generation is not None:
+            await self._cancel_active()
 
     async def _cancel_active(self) -> None:
         generation_id = self._active_generation

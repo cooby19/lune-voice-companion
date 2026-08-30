@@ -9,6 +9,7 @@ catch.
 from __future__ import annotations
 
 import re
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import numpy as np
@@ -18,6 +19,7 @@ import lune.ui
 from lune.config import AppConfig
 from lune.ipc.contracts import UI_EVENT_NAMES, JSONValue, event_message
 from lune.memory.store import EMBEDDING_DIMENSIONS, MemoryStore
+from lune.memory.titles import ThreadTitleManager, ThreadTitleRequest
 from lune.paths import LunePaths
 from lune.readiness import Readiness
 from lune.ui.runtime import UiRuntime
@@ -73,6 +75,13 @@ def _embedding(index: int = 0) -> np.ndarray[tuple[int], np.dtype[np.float32]]:
     vector = np.zeros(EMBEDDING_DIMENSIONS, dtype=np.float32)
     vector[index] = 1.0
     return vector
+
+
+def _fixed_title(title: str) -> Callable[[ThreadTitleRequest], Awaitable[str]]:
+    async def backend(_request: ThreadTitleRequest) -> str:
+        return title
+
+    return backend
 
 
 def _complete_turn(store: MemoryStore, thread_id: str, *, user: str, assistant: str) -> str:
@@ -152,6 +161,37 @@ async def test_renaming_a_thread_announces_the_new_title(tmp_path: Path) -> None
         assert threads[-1]["id"] == "thread-one"
         assert threads[-1]["title"] == "週末安排"
         assert threads[-1]["title_source"] == "manual"
+    finally:
+        await recording.runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_an_automatic_title_reaches_the_client_the_same_way_a_rename_does(
+    tmp_path: Path,
+) -> None:
+    """The one generated title is a thread change, so it needs no channel of its own."""
+
+    recording = await _recording(tmp_path)
+    try:
+        _complete_turn(recording.store, "thread-one", user="我想去京都", assistant="那要先看機票")
+        recording.events.clear()
+        manager = ThreadTitleManager(recording.store, _fixed_title("京都的行程"))
+
+        assert (
+            await manager.maybe_title(
+                "thread-one", generation_id=1, is_generation_current=lambda _generation: True
+            )
+            == "京都的行程"
+        )
+
+        threads = [payload["thread"] for payload in recording.payloads("thread_updated")]
+        assert threads[-1]["id"] == "thread-one"
+        assert threads[-1]["title"] == "京都的行程"
+        assert threads[-1]["title_source"] == "generated"
+        # The same per-item view the snapshot renders, so the client merges one
+        # shape whichever channel it arrived on.
+        snapshot = recording.runtime.snapshot()
+        assert threads[-1] in snapshot["threads"]
     finally:
         await recording.runtime.close()
 

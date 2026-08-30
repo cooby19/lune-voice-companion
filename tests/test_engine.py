@@ -10,7 +10,7 @@ import pytest
 from lune.audio.coreaudio import StreamOwnerHealth
 from lune.audio.devices import DeviceInfo, DeviceSnapshot
 from lune.audio.transport import LocalAudioTransport
-from lune.engine import EngineDependencies, compose_voice_engine
+from lune.engine import EngineDependencies, _cloud_composition, compose_voice_engine
 from lune.llm.budget import BudgetLedger
 from lune.llm.contracts import (
     GenerationLLMTextFrame,
@@ -270,3 +270,21 @@ def test_the_entry_point_only_opens_the_microphone_when_asked(
     assert engine_module.main(["--microphone", "--ephemeral-memory"]) == 0
     # Cold start stays mic-off, and the private database stays the default.
     assert seen == [(False, False), (True, True)]
+
+
+def test_only_a_composition_that_names_threads_for_free_carries_a_title_backend() -> None:
+    """The cloud pair has no free way to name a thread, so it offers none yet.
+
+    The UI spec forbids a title from opening a cloud request of its own, and the
+    hybrid form is meant to reuse the fallback model's own request. Until that
+    exists, a cloud composition leaves the thread on its default title rather
+    than quietly buying a second request.
+    """
+
+    cloud = _cloud_composition(
+        api_key="test-key",
+        system_instruction="private persona",
+        max_output_tokens=64,
+    )
+
+    assert cloud.title_backend is None

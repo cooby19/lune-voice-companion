@@ -293,3 +293,119 @@ def test_the_service_refuses_an_empty_persona_or_an_out_of_range_bound() -> None
         build_service(host, system_instruction="")
     with pytest.raises(ValueError):
         build_service(host, max_output_tokens=193)
+
+
+class TwoPhaseWorkerHost:
+    """Hold the first generation open until cancelled, then answer the next at once."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled: list[int] = []
+        self.generations: list[int] = []
+        self._generation = 0
+        self._holding: asyncio.Event | None = None
+
+    async def start(self) -> None:
+        return None
+
+    def advance_generation(self) -> int:
+        self._generation += 1
+        return self._generation
+
+    async def generate(
+        self,
+        *,
+        generation_id: int,
+        request_id: str,
+        messages: Sequence[Mapping[str, str]],
+        tools: Sequence[Mapping[str, Any]] | None = None,
+        max_tokens: int = 192,
+        cancel_after_first_token: bool = False,
+        on_text: Callable[[str], Awaitable[None]] | None = None,
+    ) -> GenerationOutcome:
+        del request_id, messages, tools, max_tokens, cancel_after_first_token
+        self.generations.append(generation_id)
+        if len(self.generations) == 1:
+            self._holding = asyncio.Event()
+            self.started.set()
+            await self._holding.wait()
+            return GenerationOutcome(generation_id=generation_id, status="cancelled")
+        if on_text is not None:
+            await on_text("好。")
+        return GenerationOutcome(generation_id=generation_id, status="completed", text="好。")
+
+    async def cancel(self, generation_id: int) -> None:
+        self.cancelled.append(generation_id)
+        if self._holding is not None:
+            self._holding.set()
+
+    async def close(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_band_completion_pushes_no_frames_and_offers_no_tools() -> None:
+    host = FakeWorkerHost(chunks=("週末的旅行計畫",))
+    service = build_service(host)
+    pushed: list[object] = []
+
+    async def record(frame: object, direction: object = None) -> None:
+        pushed.append(frame)
+
+    service.push_frame = record  # type: ignore[assignment]
+
+    title = await service.complete_once(messages=({"role": "user", "content": "命名這一輪"},))
+
+    assert title == "週末的旅行計畫"
+    # Nothing was pushed downstream, so the sentence gate and TTS cannot see it,
+    # and the proposal tools are not offered for work that is not a turn.
+    assert pushed == []
+    assert host.tools == ()
+    assert host.max_tokens == 32
+    assert host.messages == ({"role": "user", "content": "命名這一輪"},)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_or_faulted_completion_answers_with_nothing() -> None:
+    cancelled = build_service(FakeWorkerHost(chunks=("一半",), status="cancelled"))
+    assert await cancelled.complete_once(messages=({"role": "user", "content": "命名"},)) == ""
+
+    faulted = build_service(FakeWorkerHost(error=WorkerError("worker_eof")))
+    assert await faulted.complete_once(messages=({"role": "user", "content": "命名"},)) == ""
+
+
+@pytest.mark.asyncio
+async def test_an_arriving_turn_takes_the_worker_back_from_background_work() -> None:
+    host = TwoPhaseWorkerHost()
+    service = LocalQwenLLMService(
+        host=host,  # type: ignore[arg-type]
+        system_instruction="private persona",
+    )
+    provider = PipecatAttemptProvider(model="qwen3.5-4b-q4-local", service=service)
+    background = asyncio.create_task(
+        service.complete_once(messages=({"role": "user", "content": "命名這一輪"},))
+    )
+    try:
+        await asyncio.wait_for(host.started.wait(), timeout=2.0)
+        frames = await collect(provider)
+    finally:
+        await provider.close()
+
+    # The turn did not queue behind the title: it stopped it, then ran.
+    assert host.cancelled == [1]
+    assert host.generations == [1, 2]
+    assert await asyncio.wait_for(background, timeout=2.0) == ""
+    assert [frame.text for frame in frames if isinstance(frame, GenerationLLMTextFrame)] == ["好。"]
+    terminal = frames[-1]
+    assert isinstance(terminal, ProviderTerminalFrame)
+    assert terminal.status == "completed"
+
+
+def test_a_completion_needs_a_message_and_respects_the_output_bound() -> None:
+    service = build_service(FakeWorkerHost())
+    with pytest.raises(ValueError):
+        asyncio.run(service.complete_once(messages=()))
+    with pytest.raises(ValueError):
+        asyncio.run(
+            service.complete_once(messages=({"role": "user", "content": "命名"},), max_tokens=193)
+        )

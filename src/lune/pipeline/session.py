@@ -28,6 +28,7 @@ from lune.llm_spike.tools import PROPOSE_AFFINITY, PROPOSE_MEMORY, ToolCallValid
 from lune.memory.proposals import AffinityProposal, MemoryProposal, ProposalHost
 from lune.memory.store import MemoryStore
 from lune.memory.summary import RollingSummaryManager
+from lune.memory.titles import ThreadTitleManager
 from lune.pipeline.contracts import TurnGateEvent, TurnOutcome, TurnStarted, UtteranceCaptured
 from lune.pipeline.coordinator import GenerationCoordinator, ProviderFence
 from lune.pipeline.enricher import ContextEnricher
@@ -121,6 +122,7 @@ class VoiceSession:
         playback: PlaybackSink,
         proposals: ProposalHost,
         summarizer: RollingSummaryManager | None = None,
+        titler: ThreadTitleManager | None = None,
         rebuild_streams: Callable[[DeviceSnapshot], MaybeAwaitable] | None = None,
         primary_model: ModelName | None = None,
         max_output_tokens: int = 192,
@@ -145,6 +147,7 @@ class VoiceSession:
         self._playback = playback
         self._proposals = proposals
         self._summarizer = summarizer
+        self._titler = titler
         self._max_output_tokens = max_output_tokens
         self._max_input_tokens = max_input_tokens
         self._stt_timeout_s = stt_timeout_s
@@ -492,6 +495,11 @@ class VoiceSession:
         else:
             self._set_state(self._idle_state(), turn.generation_id)
         if outcome == "completed":
+            # Both of these run after the state is back to idle, so neither can
+            # hold the microphone in `thinking` for work the user never asked
+            # for. They are still awaited inside the turn task, so shutdown
+            # cancels them the same way it cancels a generation.
+            await self.name_thread_if_due(turn.generation_id)
             await self.summarize_if_due()
 
     def _outcome(self, turn: _ActiveTurn, result: GenerationResult) -> TurnOutcome:
@@ -521,6 +529,27 @@ class VoiceSession:
             self._store.cancel_turn(turn.turn_id)
         except ValueError:
             return
+
+    async def name_thread_if_due(self, generation_id: int) -> str | None:
+        """Generate this thread's one automatic title, off the answering path.
+
+        The fence passed in is the generation that earned the turn, not whatever
+        is current when the model finally answers: a barge-in that lands while
+        the title is being written invalidates it, exactly as it invalidates the
+        turn's own transcript.  Failure and cancellation are indistinguishable
+        here on purpose, because both mean "keep the default title".
+        """
+
+        if self._titler is None:
+            return None
+        title = await self._titler.maybe_title(
+            self._session_id,
+            generation_id=generation_id,
+            is_generation_current=self._coordinator.is_current,
+        )
+        if title is not None:
+            self._emit(event="thread_titled", generation_id=generation_id)
+        return title
 
     async def summarize_if_due(self) -> bool:
         """Run the 13th-turn rolling summary outside the latency-critical path."""

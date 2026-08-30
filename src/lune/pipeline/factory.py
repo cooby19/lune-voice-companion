@@ -18,6 +18,7 @@ from lune.memory.embedding import E5MemoryRetriever
 from lune.memory.proposals import ProposalHost
 from lune.memory.store import MemoryStore
 from lune.memory.summary import RollingSummaryManager
+from lune.memory.titles import ThreadTitleManager
 from lune.pipeline.coordinator import GenerationCoordinator, ProviderFence
 from lune.pipeline.enricher import ContextEnricher
 from lune.pipeline.playback import DEFAULT_CAPACITY, AudioOutputDevice, PlaybackSink
@@ -71,6 +72,7 @@ def build_voice_pipeline(
     output_device: AudioOutputDevice,
     provider_fences: Sequence[ProviderFence] = (),
     summarizer: RollingSummaryManager | None = None,
+    titler: ThreadTitleManager | None = None,
     rebuild_streams: Callable[[DeviceSnapshot], MaybeAwaitable] | None = None,
     primary_model: ModelName | None = None,
     transport: LocalAudioTransport | None = None,
@@ -131,6 +133,7 @@ def build_voice_pipeline(
         playback=playback,
         proposals=proposals,
         summarizer=summarizer,
+        titler=titler,
         rebuild_streams=rebuild_streams,
         primary_model=primary_model,
         max_output_tokens=max_output_tokens,

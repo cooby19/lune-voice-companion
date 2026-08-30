@@ -25,9 +25,11 @@ from lune.llm.local_qwen import LocalQwenLLMService
 from lune.llm.prompt import build_persona_instruction
 from lune.llm.provider import LLMProviderFactory, LocalQwenProviderConfig
 from lune.llm.streaming import AttemptStreamProvider
+from lune.llm.titles import LocalQwenTitleBackend
 from lune.memory.embedding import E5MemoryRetriever, LocalE5Encoder
 from lune.memory.store import MemoryStore
 from lune.memory.summary import RollingSummaryManager
+from lune.memory.titles import ThreadTitleBackend, ThreadTitleManager
 from lune.memory.usage import persistent_budget_ledger
 from lune.paths import LunePaths
 from lune.pipeline.coordinator import ProviderFence
@@ -88,6 +90,7 @@ class EngineDependencies:
     provider_fences: Sequence[ProviderFence] = ()
     provider_closers: Sequence[AsyncCloser] = ()
     summarizer: RollingSummaryManager | None = None
+    titler: ThreadTitleManager | None = None
     audio: AudioConfig = field(default_factory=AudioConfig)
     diagnostics: SafeDiagnostics | None = None
 
@@ -388,6 +391,7 @@ def compose_voice_engine(
         output_device=stream_owner,
         provider_fences=dependencies.provider_fences,
         summarizer=dependencies.summarizer,
+        titler=dependencies.titler,
         rebuild_streams=stream_owner.rebuild_streams,
         primary_model=dependencies.primary_model,
         transport=local_transport,
@@ -418,6 +422,8 @@ class _ProviderComposition:
     fences: tuple[ProviderFence, ...]
     closers: tuple[AsyncCloser, ...]
     primary_model: ModelName | None = None
+    # Present only where a thread can be named without a request of its own.
+    title_backend: ThreadTitleBackend | None = None
 
 
 def _cloud_composition(
@@ -471,6 +477,7 @@ async def _local_composition(
         # nothing can still ask them for tokens.
         closers=(provider, service),
         primary_model=LOCAL_MODEL_NAME,
+        title_backend=LocalQwenTitleBackend(service),
     )
 
 
@@ -544,6 +551,11 @@ async def build_default_engine(
             max_output_tokens=config.models.max_output_tokens,
             provider_fences=composition.fences,
             provider_closers=composition.closers,
+            titler=(
+                None
+                if composition.title_backend is None
+                else ThreadTitleManager(store, composition.title_backend)
+            ),
             audio=config.audio,
         )
         return compose_voice_engine(dependencies, transport=transport, streams=streams)
