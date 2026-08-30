@@ -141,6 +141,12 @@
     return value !== null && typeof value === "object" && !Array.isArray(value);
   }
 
+  // A snapshot always carries these two, including the shell state sent while
+  // the local runtime is still starting; no command result looks like this.
+  function isSnapshotShape(value) {
+    return isObject(value) && "app" in value && "threads" in value;
+  }
+
   function asObject(value) {
     return isObject(value) ? value : {};
   }
@@ -1091,7 +1097,7 @@
       const memoryLink = element("button", {
         className: "message-memory-note",
         type: "button",
-        text: "・來自她記得的事",
+        text: "・她想起了一件事",
         dataset: { action: "show-memories", memoryId: message.memoryIds[0] },
       });
       detail.append(memoryLink);
@@ -2283,10 +2289,15 @@
     }
     if (type === "result" || type === "command_result") {
       const pending = resolvePending(message.id, true, message);
+      // Several commands answer with a whole snapshot rather than an envelope
+      // around one.  `forget_memory` is the one that matters: dropping its
+      // reply would leave a deleted memory referenced on screen until the next
+      // reconciling tick, so a bare snapshot is recognised by its own shape.
+      const bareSnapshot = isSnapshotShape(message.result) ? message.result : null;
       if (message.snapshot || message.payload?.snapshot || message.result?.snapshot) {
         applySnapshot(message.snapshot || message.payload?.snapshot || message.result.snapshot);
-      } else if (pending?.command === "get_status" && isObject(message.result)) {
-        applySnapshot(message.result);
+      } else if (bareSnapshot) {
+        applySnapshot(bareSnapshot);
       } else if (pending?.command === "search_memories" && Array.isArray(message.result?.results)) {
         state.searchResults = message.result.results.map(normalizeMemory);
         if (state.activeView === "memories") {

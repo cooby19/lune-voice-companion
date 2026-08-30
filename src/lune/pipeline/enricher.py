@@ -2,13 +2,33 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from lune.llm.prompt import ConversationMessage, PromptContext
-from lune.memory.embedding import E5MemoryRetriever, E5SetupRequired, memory_contents
+from lune.memory.embedding import (
+    E5MemoryRetriever,
+    E5SetupRequired,
+    MemorySearchResult,
+    memory_contents,
+)
 from lune.memory.store import MemoryStore
 
 MAX_RECENT_TURNS = 12
 MAX_MEMORIES = 5
 MAX_MEMORY_CHARACTERS = 1_200
+
+
+@dataclass(frozen=True, slots=True)
+class EnrichedContext:
+    """One turn's prompt context, alongside what retrieval contributed to it.
+
+    The identifiers travel separately from the text because they serve a
+    different consumer: the prompt only ever needs the memory content, while the
+    interface needs to name which stored memories were in front of the model.
+    """
+
+    context: PromptContext
+    memory_ids: tuple[str, ...]
 
 
 class ContextEnricher:
@@ -49,17 +69,21 @@ class ContextEnricher:
 
         return self._retrieval_available
 
-    def enrich(self, session_id: str, *, user_text: str) -> PromptContext:
+    def enrich(self, session_id: str, *, user_text: str) -> EnrichedContext:
         history = self._store.unsummarized_complete_turns(session_id)[-self._max_recent_turns :]
         messages = tuple(message for turn in history for message in turn.messages)
         summary = self._store.get_summary(session_id)
-        return PromptContext(
-            recent_messages=(*messages, ConversationMessage("user", user_text)),
-            summary=summary.content if summary is not None else None,
-            relevant_memories=self._memories(user_text),
+        retrieved = self._memories(user_text)
+        return EnrichedContext(
+            context=PromptContext(
+                recent_messages=(*messages, ConversationMessage("user", user_text)),
+                summary=summary.content if summary is not None else None,
+                relevant_memories=memory_contents(retrieved),
+            ),
+            memory_ids=tuple(result.id for result in retrieved),
         )
 
-    def _memories(self, user_text: str) -> tuple[str, ...]:
+    def _memories(self, user_text: str) -> tuple[MemorySearchResult, ...]:
         if self._retriever is None or not self._retrieval_available:
             return ()
         try:
@@ -71,4 +95,4 @@ class ContextEnricher:
         except E5SetupRequired:
             self._retrieval_available = False
             return ()
-        return memory_contents(results)
+        return results

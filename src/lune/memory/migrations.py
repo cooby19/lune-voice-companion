@@ -138,4 +138,18 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
         CREATE INDEX sessions_updated_at ON sessions(updated_at DESC, id DESC);
         """,
     ),
+    Migration(
+        3,
+        """
+        CREATE TABLE turn_retrieved_memories (
+            turn_id TEXT NOT NULL REFERENCES turns(id) ON DELETE CASCADE,
+            memory_id TEXT NOT NULL REFERENCES long_term_memories(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL CHECK (position >= 0),
+            PRIMARY KEY (turn_id, memory_id)
+        );
+
+        CREATE INDEX turn_retrieved_memories_memory
+            ON turn_retrieved_memories(memory_id);
+        """,
+    ),
 )

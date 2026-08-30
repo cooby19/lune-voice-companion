@@ -459,6 +459,52 @@ async def test_the_session_recovers_and_serves_a_second_turn(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_a_turn_records_the_memories_that_reached_the_model(tmp_path: Path) -> None:
+    harness = build_harness(
+        tmp_path,
+        terra_scripts=(
+            (
+                tool(
+                    "propose_memory",
+                    {
+                        "content": "漢堡每週三上瑜伽課",
+                        "category": "explicit_plan",
+                        "importance": 0.8,
+                    },
+                ),
+                text("記住了。"),
+                terminal(),
+            ),
+            (text("你要上瑜伽課。"), terminal()),
+        ),
+    )
+    await listen(harness)
+    await harness.speak_utterance()
+    await harness.stt.emit_final("記住我每週三上瑜伽課")
+    await harness.pipeline.session.wait_for_turns()
+
+    memories = harness.store.list_memories()
+    assert len(memories) == 1
+
+    await harness.speak_utterance()
+    await harness.stt.emit_final("我週三要做什麼")
+    await harness.pipeline.session.wait_for_turns()
+
+    # The first turn ran before that memory existed, so only the second one can
+    # name it, and only on the answer the memory was actually handed to.
+    assert [
+        (message.role, message.memory_ids)
+        for message in harness.store.conversation_messages(SESSION_ID)
+    ] == [
+        ("user", ()),
+        ("assistant", ()),
+        ("user", ()),
+        ("assistant", (memories[0].id,)),
+    ]
+    await harness.pipeline.session.close()
+
+
+@pytest.mark.asyncio
 async def test_usage_is_settled_against_the_local_month(tmp_path: Path) -> None:
     harness = build_harness(tmp_path, terra_scripts=((text("你好。"), terminal()),))
     await listen(harness)

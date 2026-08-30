@@ -857,7 +857,12 @@ def _thread_view(thread: ConversationThread) -> dict[str, JSONValue]:
 
 
 def _message_view(message: StoredMessage) -> dict[str, JSONValue]:
-    """One message, shaped identically for snapshots and `message_added`."""
+    """One message, shaped identically for snapshots and `message_added`.
+
+    ``memory_ids`` carries identifiers only, never memory text: the interface
+    reads the wording from the memory list it already holds, so a memory the
+    user forgot cannot come back through a message.
+    """
 
     return {
         "id": message.id,
@@ -866,6 +871,7 @@ def _message_view(message: StoredMessage) -> dict[str, JSONValue]:
         "role": message.role,
         "content": _display_text(message.content),
         "created_at": message.created_at,
+        "memory_ids": list(message.memory_ids),
     }
 
 

@@ -278,7 +278,7 @@ def test_v1_database_migrates_existing_sessions_messages_and_memory_sources(tmp_
     connection.close()
 
     with MemoryStore(path) as store:
-        assert store.schema_version == 2
+        assert store.schema_version == 3
         thread = store.get_conversation_thread("legacy-thread")
         assert thread is not None
         assert (thread.title, thread.title_source, thread.updated_at, thread.ended_at) == (

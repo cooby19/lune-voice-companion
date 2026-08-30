@@ -84,6 +84,7 @@ class _ActiveTurn:
     failed: bool = False
     played_sentences: int = 0
     rejected_tool_calls: int = 0
+    retrieved_memory_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -454,7 +455,11 @@ class VoiceSession:
         await self._finish_turn(turn, result)
 
     async def _generate(self, turn: _ActiveTurn, user_text: str) -> GenerationResult:
-        context = self._enricher.enrich(self._session_id, user_text=user_text)
+        enriched = self._enricher.enrich(self._session_id, user_text=user_text)
+        # Held on the turn rather than written now: a cancelled turn leaves no
+        # transcript behind, so it must leave no record of what it read either.
+        turn.retrieved_memory_ids = enriched.memory_ids
+        context = enriched.context
         return await self._generator.generate(
             generation_id=turn.generation_id,
             context=context,
@@ -518,6 +523,13 @@ class VoiceSession:
             turn.generation_id,
             is_generation_current=self._coordinator.is_current,
         )
+        # Written before the turn completes so the store's own change notice
+        # already carries them, and a lost link never costs the turn itself.
+        if turn.retrieved_memory_ids:
+            try:
+                self._store.record_retrieved_memories(turn.turn_id, turn.retrieved_memory_ids)
+            except ValueError:
+                pass
         try:
             self._store.complete_turn(turn.turn_id)
         except ValueError:

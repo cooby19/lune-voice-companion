@@ -19,14 +19,14 @@ NOW = datetime(2026, 8, 27, 2, tzinfo=UTC)
 def test_migrations_are_idempotent_and_connections_are_private(tmp_path: Path) -> None:
     path = tmp_path / "private" / "lune.sqlite3"
     with MemoryStore(path) as first:
-        assert first.schema_version == 2
+        assert first.schema_version == 3
         assert first.pragma("foreign_keys") == 1
         assert first.pragma("journal_mode") == "wal"
         assert first.pragma("busy_timeout") == 5_000
         assert first.pragma("secure_delete") == 1
 
     with MemoryStore(path) as reopened:
-        assert reopened.schema_version == 2
+        assert reopened.schema_version == 3
 
     assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -45,6 +45,7 @@ def test_migrations_are_idempotent_and_connections_are_private(tmp_path: Path) -
         "relationship_state",
         "relationship_events",
         "llm_usage",
+        "turn_retrieved_memories",
     } <= tables
 
 

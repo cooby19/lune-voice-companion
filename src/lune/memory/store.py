@@ -37,6 +37,7 @@ _THREAD_TITLE_SOURCES: Final[frozenset[ThreadTitleSource]] = frozenset(
     {"default", "generated", "manual"}
 )
 _MEMORY_SOURCES: Final[frozenset[MemorySource]] = frozenset({"user_requested", "lune_observed"})
+MAX_RETRIEVED_MEMORIES: Final[int] = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +63,13 @@ class ConversationThread:
 
 @dataclass(frozen=True, slots=True)
 class StoredMessage:
-    """One final, UI-readable message from a completed conversation turn."""
+    """One final, UI-readable message from a completed conversation turn.
+
+    ``memory_ids`` names the long-term memories retrieval put into this turn's
+    prompt, best match first, and is empty for every user message.  A forgotten
+    memory is deleted out of that link by the schema, so this can never point at
+    a memory the user has already erased.
+    """
 
     id: str
     thread_id: str
@@ -71,6 +78,7 @@ class StoredMessage:
     role: str
     created_at: str
     content: str = field(repr=False)
+    memory_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -307,6 +315,42 @@ class MemoryStore:
 
         return self._append_assistant_text(turn_id, content, label="assistant text delivery", at=at)
 
+    def record_retrieved_memories(self, turn_id: str, memory_ids: Sequence[str]) -> tuple[str, ...]:
+        """Link the memories retrieval put into one pending turn's prompt.
+
+        Callers pass the retriever's ranking, and it is stored as such so the
+        interface can name the closest match first.  A memory the user forgot
+        between retrieval and commit is silently skipped rather than raised: a
+        missing link costs one hint, a raised error would cost the whole turn.
+        Returns the identifiers that were actually linked.
+        """
+
+        identifier = _validated_id(turn_id, "turn")
+        ordered: list[str] = []
+        for memory_id in memory_ids:
+            clean = _validated_id(memory_id, "memory")
+            if clean not in ordered:
+                ordered.append(clean)
+        if len(ordered) > MAX_RETRIEVED_MEMORIES:
+            raise ValueError("a turn cannot retrieve more than five memories")
+        if not ordered:
+            return ()
+        linked: list[str] = []
+        with self._write():
+            self._require_pending_turn(identifier)
+            for position, memory_id in enumerate(ordered):
+                cursor = self._connection.execute(
+                    """
+                    INSERT OR IGNORE INTO turn_retrieved_memories
+                        (turn_id, memory_id, position)
+                    SELECT ?, id, ? FROM long_term_memories WHERE id = ?
+                    """,
+                    (identifier, position, memory_id),
+                )
+                if cursor.rowcount == 1:
+                    linked.append(memory_id)
+        return tuple(linked)
+
     def complete_turn(self, turn_id: str, *, at: datetime | None = None) -> None:
         turn_id = _validated_id(turn_id, "turn")
         completed_at = _timestamp(at)
@@ -400,6 +444,7 @@ class MemoryStore:
             """,
             (_validated_id(thread_id, "conversation thread"),),
         ).fetchall()
+        retrieved = self._retrieved_memories_by_turn(thread_id)
         return tuple(
             StoredMessage(
                 id=str(row["id"]),
@@ -409,9 +454,32 @@ class MemoryStore:
                 role=str(row["role"]),
                 created_at=str(row["created_at"]),
                 content=str(row["content"]),
+                memory_ids=(
+                    retrieved.get(str(row["turn_id"]), ())
+                    if str(row["role"]) == "assistant"
+                    else ()
+                ),
             )
             for row in rows
         )
+
+    def _retrieved_memories_by_turn(self, thread_id: str) -> dict[str, tuple[str, ...]]:
+        """Read one thread's retrieval links in a single pass, best match first."""
+
+        rows = self._execute(
+            """
+            SELECT links.turn_id, links.memory_id
+            FROM turn_retrieved_memories AS links
+            JOIN turns ON turns.id = links.turn_id
+            WHERE turns.session_id = ? AND turns.status = 'complete'
+            ORDER BY links.turn_id, links.position
+            """,
+            (_validated_id(thread_id, "conversation thread"),),
+        ).fetchall()
+        grouped: dict[str, list[str]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["turn_id"]), []).append(str(row["memory_id"]))
+        return {turn_id: tuple(ids) for turn_id, ids in grouped.items()}
 
     def rename_conversation_thread(
         self, thread_id: str, title: str, *, at: datetime | None = None

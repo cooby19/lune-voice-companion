@@ -18,6 +18,7 @@
 | M7 第二階段：無雲端實體 smoke | 部分執行 | 已授權並在目標 Mac 執行：冷啟動 mic-off、耳機辨識、麥克風開啟、**一次完整實體 turn**（端到端 2,664.7 ms，門檻 p50 ≤1.5 s 未通過）、關閉後無殘留；插話 200 ms 與裝置切換未執行；期間修正五項缺陷；486 項完整 pytest |
 | M7 後半：桌面殼與 authenticated IPC | 部分完成（公開 gate）；實體與打包 gate 未執行 | loopback WebSocket IPC（一次性 token、protocol 版本、訊息上限、單一 client）、`lune-engine --ui-ipc` 引擎子行程與一行私人 handoff、`UiRuntime` 命令與 snapshot 契約、pywebview 視窗殼與內嵌 Web UI；519 項完整 pytest；rumps 依 `docs/ui-spec.md` 放棄，py2app 只更新設定、實際打包與簽署未執行 |
 | M7 後半補完：增量 UI 事件通道 | 完成（公開 gate） | `message_added`／`thread_updated`／`memory_updated` 由 `MemoryStore` 的 commit 後通知接上發送端，payload 與 snapshot 共用同一份 per-item view；snapshot 退為 2 秒一次、只在改變時送出的對帳，送事件會推進對帳基準；事件佇列有上限，滿了丟事件而非阻塞引擎，並強制下一次完整對帳；`app.js` 補上 `memory_updated` 分支、修正 thread 排序與通話計時被事件倒退；25 項新測試／550 項完整 pytest |
+| 訊息上的記憶標記接上資料鏈 | 完成（公開 gate） | `turn_retrieved_memories`（schema v3，兩個外鍵皆 `ON DELETE CASCADE`）；enricher 保留檢索排名、turn 提交時寫入、`_message_view` 的 `memory_ids` 由 snapshot 與 `message_added` 共用；`app.js` 補上套用命令回傳 snapshot 的分支，硬刪記憶當下即無殘影；11 項新測試／610 項完整 pytest |
 | M8 | 待處理 | Keychain、簽署、soak／隱私／release gate |
 
 ## 驗收原則
@@ -268,6 +269,61 @@ P3 已完成的 `thread_updated`，payload 與 snapshot 用同一份 `_thread_vi
 完整 pytest 576 項通過（新增 26 項），Ruff lint／format、mypy、secret scan、import／self-test、
 `git diff --check` 全綠。**未執行**：沒有實際用 `Qwen3.5-4B` Q4 跑過一次真實標題生成，所以標題
 品質、生成耗時，以及插話搶回 worker 的實機時序都尚未量測。
+
+## 訊息上的記憶標記接上資料鏈（2026-08-30）
+
+`src/lune/ui/static/app.js` 的 `renderMessage()` 早就會在 `message.memoryIds` 非空時畫出一顆
+「來自她記得的事」，`normalizeMessage()` 也解析 `memory_ids`——但沒有任何一端送過這個欄位，
+所以那顆按鈕從來沒出現過。斷點在 `ContextEnricher._memories()`：`retriever.search()` 回傳的
+`MemorySearchResult` 帶著 id，`memory_contents()` 只取文字，id 當場丟棄。
+
+本次把這條線接起來。做這件事的理由不是補完一顆按鈕，而是〈你與 Lune 的設定檔〉那頁對使用者
+承諾「她自己注意到的 —— 聊到相關的事才會想起來」，而介面裡沒有任何一處能讓人驗證這句話。
+
+| 位置 | 改動 |
+|---|---|
+| `src/lune/memory/migrations.py` | migration 3：`turn_retrieved_memories(turn_id, memory_id, position)` |
+| `src/lune/memory/store.py` | `record_retrieved_memories()`；`StoredMessage.memory_ids`；`conversation_messages()` 單次查詢帶出關聯 |
+| `src/lune/pipeline/enricher.py` | `enrich()` 改回傳 `EnrichedContext`（context + 檢索排名的 id） |
+| `src/lune/pipeline/session.py` | id 掛在 `_ActiveTurn` 上，於 `complete_turn()` 之前寫入 |
+| `src/lune/ui/runtime.py` | `_message_view` 增加 `memory_ids` |
+| `src/lune/ui/static/app.js` | 套用命令回傳的整包 snapshot（見下） |
+
+### 為什麼寫在提交時，而不是檢索當下
+
+檢索發生在 `_generate()` 內，那時 turn 還可能被插話取消。取消的一輪不留逐字稿，就不該留下
+「它讀過哪些記憶」的紀錄，所以 id 先掛在 `_ActiveTurn` 上，只有 `_commit_turn()` 會寫入，
+而且寫在 `complete_turn()` 之前——這樣 store 發出的既有 `StoreChange("messages")` 轉成
+`message_added` 時，payload 已經帶著 `memory_ids`，不需要新事件。
+
+寫入失敗（例如使用者剛好在這兩者之間刪掉那筆記憶）一律吞掉：關聯是介面提示，turn 不能陪葬。
+`record_retrieved_memories()` 用 `INSERT ... SELECT ... FROM long_term_memories WHERE id = ?`，
+記憶不存在就是零列，不會撞外鍵。
+
+### 刪除不留殘影
+
+`forget_memory()` 是逐筆硬刪，`ON DELETE CASCADE` 讓關聯同時消失，所以資料庫層不可能殘留。
+介面層原本還差一步：`forget_memory` 回傳的是一整包 snapshot，但 `app.js` 的 result 分支只認
+`message.snapshot` 與 `get_status`，這份回傳被丟掉，標記要撐到下一次對帳 tick 才更新。
+本次補上以外形辨識整包 snapshot 的分支，刪除當下即生效。這個缺陷在 `memory_ids` 之前不可見。
+
+介面拿到的只有 id，記憶文字一律由記憶清單提供，因此已刪除的記憶不可能循訊息這條路回到畫面上。
+
+### 未做與未定
+
+- **不回填。** 過去的檢索沒有被記錄過，既有對話永遠不會有標記，第一次看到要等下一輪新對話。
+- **點擊行為仍未定**（`docs/ui-spec.md`〈尚未決定〉）。目前點下去只切到記憶面板、不高亮。
+  要做高亮就得連同記憶面板的 `_MEMORY_LIMIT = 16` 一起決定。
+- **文案已改。** 原稿的「來自她記得的事」宣稱的是因果，實際只能保證「這幾筆進了那一輪的 prompt」，
+  因此改為「她想起了一件事」。約束本身也寫進了 ui-spec。
+
+### Gate
+
+610 項完整 pytest 通過（新增 11 項），Ruff lint／format、mypy、secret scan、`git diff --check` 全綠。
+`lune self-test` 與 `import py2app; import lune.app; import lune.engine` 需帶 `PYTHONPATH=src` 才通過：
+`.venv` 內的 editable 安裝目前沒有生效，與本次變更無關（pytest 自己設定 `pythonpath = ["src"]`，
+所以測試不受影響）。**未執行**：沒有真的開過視窗看這顆標記，前端沒有測試框架，
+`app.js` 只能靠讀取實體檔案的契約測試守住。
 
 ## 後續交接
 

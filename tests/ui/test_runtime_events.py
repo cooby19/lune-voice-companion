@@ -294,6 +294,53 @@ async def test_remembering_and_forgetting_announce_the_bounded_memory_list(
 
 
 @pytest.mark.asyncio
+async def test_a_message_names_the_memories_it_was_answered_with(tmp_path: Path) -> None:
+    """Identifiers only, on both channels, and gone the moment the memory is."""
+
+    recording = await _recording(tmp_path)
+    try:
+        source = _complete_turn(
+            recording.store, "thread-one", user="第一輪的使用者", assistant="第一輪的回覆"
+        )
+        recording.store.add_memory(
+            memory_id="memory-one",
+            content="她記得的事",
+            category="stable_preference",
+            importance=0.6,
+            embedding=_embedding(),
+            embedding_model="test-model",
+            embedding_revision="test-revision",
+            source_turn_id=source,
+        )
+        recording.events.clear()
+
+        turn_id = recording.store.begin_turn("thread-one", 2)
+        recording.store.accept_user_transcript(turn_id, "第二輪的使用者")
+        recording.store.append_assistant_playback(turn_id, "第二輪的回覆")
+        recording.store.record_retrieved_memories(turn_id, ["memory-one"])
+        recording.store.complete_turn(turn_id)
+
+        announced = [payload["message"] for payload in recording.payloads("message_added")]
+        assert [message["memory_ids"] for message in announced] == [[], ["memory-one"]]
+        assert announced == recording.runtime.snapshot()["messages"][-2:]
+        # The link is an identifier, never the remembered wording.
+        assert "她記得的事" not in str(announced)
+
+        await recording.runtime.handle(
+            "forget_memory", {"memory_id": "memory-one", "confirmation": "memory-one"}
+        )
+
+        assert [message["memory_ids"] for message in recording.runtime.snapshot()["messages"]] == [
+            [],
+            [],
+            [],
+            [],
+        ]
+    finally:
+        await recording.runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_a_runtime_without_a_sink_still_serves_snapshots(tmp_path: Path) -> None:
     """The sink is optional; a store change must not require one."""
 
@@ -366,6 +413,29 @@ def _merge_event_cases() -> set[str]:
     else:
         raise AssertionError("mergeEvent() is not brace balanced")
     return set(re.findall(r'case "([a-z_]+)":', body))
+
+
+@pytest.mark.asyncio
+async def test_the_memory_marker_app_js_renders_is_fed_by_a_real_field(tmp_path: Path) -> None:
+    """The far end of the chain, checked against a field the runtime really sends.
+
+    ``app.js`` rendered this marker for a field nobody sent, so it never
+    appeared.  Reading the shipped asset is the only automated guard there is
+    against that returning: the front end has no test runner of its own.
+    """
+
+    recording = await _recording(tmp_path)
+    try:
+        _complete_turn(recording.store, "thread-one", user="使用者說的話", assistant="Lune 回的話")
+        sent = recording.runtime.snapshot()["messages"]
+        assert isinstance(sent, list) and sent
+        assert all("memory_ids" in message for message in sent)  # type: ignore[operator]
+
+        source = (Path(lune.ui.__file__).parent / "static" / "app.js").read_text(encoding="utf-8")
+        assert "raw.memory_ids" in source
+        assert "message.memoryIds.length > 0" in source
+    finally:
+        await recording.runtime.close()
 
 
 @pytest.mark.asyncio
