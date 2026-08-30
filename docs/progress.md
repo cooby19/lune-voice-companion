@@ -18,7 +18,7 @@
 | M7 第二階段：無雲端實體 smoke | 部分執行 | 已授權並在目標 Mac 執行：冷啟動 mic-off、耳機辨識、麥克風開啟、**一次完整實體 turn**（端到端 2,664.7 ms，門檻 p50 ≤1.5 s 未通過）、關閉後無殘留；插話 200 ms 與裝置切換未執行；期間修正五項缺陷；486 項完整 pytest |
 | M7 後半：桌面殼與 authenticated IPC | 部分完成（公開 gate）；實體與打包 gate 未執行 | loopback WebSocket IPC（一次性 token、protocol 版本、訊息上限、單一 client）、`lune-engine --ui-ipc` 引擎子行程與一行私人 handoff、`UiRuntime` 命令與 snapshot 契約、pywebview 視窗殼與內嵌 Web UI；519 項完整 pytest；rumps 依 `docs/ui-spec.md` 放棄，py2app 只更新設定、實際打包與簽署未執行 |
 | M7 後半補完：增量 UI 事件通道 | 完成（公開 gate） | `message_added`／`thread_updated`／`memory_updated` 由 `MemoryStore` 的 commit 後通知接上發送端，payload 與 snapshot 共用同一份 per-item view；snapshot 退為 2 秒一次、只在改變時送出的對帳，送事件會推進對帳基準；事件佇列有上限，滿了丟事件而非阻塞引擎，並強制下一次完整對帳；`app.js` 補上 `memory_updated` 分支、修正 thread 排序與通話計時被事件倒退；25 項新測試／550 項完整 pytest |
-| 訊息上的記憶標記接上資料鏈 | 完成（公開 gate） | `turn_retrieved_memories`（schema v3，兩個外鍵皆 `ON DELETE CASCADE`）；enricher 保留檢索排名、turn 提交時寫入、`_message_view` 的 `memory_ids` 由 snapshot 與 `message_added` 共用；`app.js` 補上套用命令回傳 snapshot 的分支，硬刪記憶當下即無殘影；11 項新測試／610 項完整 pytest |
+| 訊息上的記憶標記接上資料鏈 | 完成（公開 gate） | `turn_retrieved_memories`（schema v3，兩個外鍵皆 `ON DELETE CASCADE`）；enricher 保留檢索排名、turn 提交時寫入、`_message_view` 的 `memory_ids` 由 snapshot 與 `message_added` 共用；`app.js` 補上套用命令回傳 snapshot 的分支，硬刪記憶當下即無殘影；11 項新測試／587 項完整 pytest |
 | M8 | 待處理 | Keychain、簽署、soak／隱私／release gate |
 
 ## 驗收原則
@@ -319,7 +319,7 @@ P3 已完成的 `thread_updated`，payload 與 snapshot 用同一份 `_thread_vi
 
 ### Gate
 
-610 項完整 pytest 通過（新增 11 項），Ruff lint／format、mypy、secret scan、`git diff --check` 全綠。
+587 項完整 pytest 通過（新增 11 項），Ruff lint／format、mypy、secret scan、`git diff --check` 全綠。
 `lune self-test` 與 `import py2app; import lune.app; import lune.engine` 需帶 `PYTHONPATH=src` 才通過：
 `.venv` 內的 editable 安裝目前沒有生效，與本次變更無關（pytest 自己設定 `pythonpath = ["src"]`，
 所以測試不受影響）。**未執行**：沒有真的開過視窗看這顆標記，前端沒有測試框架，
