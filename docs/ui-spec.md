@@ -25,7 +25,7 @@
 
 ## 產品形態變更
 
-原計畫的 M7 是 rumps 選單列常駐程式，`setup.py:15` 設定 `LSUIElement: True`，代表沒有 Dock
+原計畫的 M7 是 rumps 選單列常駐程式，`setup.py` 當時設定 `LSUIElement: True`，代表沒有 Dock
 圖示也沒有視窗。**本規格改為有側邊欄的視窗應用程式**，rumps 無法實作這個形態。
 
 | 項目 | 原計畫 | 本規格 |
@@ -36,8 +36,8 @@
 | 輸入方式 | 只有語音 | 語音與文字皆可 |
 | LLM | 只有 OpenAI | OpenAI 為主，本機模型為備援（測試階段：只有本機） |
 
-`LSUIElement` 必須改為 `False`；Web 殼的具體選型（pywebview 或 Tauri）尚未決定。
-IPC 仍照 `docs/handoff-m2-m8.md:600` 的 authenticated WebSocket 設計，只是連線的一端從
+`LSUIElement` 必須改為 `False`；Web 殼選型已定案為 **pywebview**（見〈視窗尺寸與斷點〉）。
+IPC 仍照 `docs/handoff-m2-m8.md` 的〈M7：桌面 App、IPC 與打包〉所述 authenticated WebSocket 設計，只是連線的一端從
 rumps 換成 Web 殼。
 
 ### 兩條通道：增量事件為主，整包 snapshot 為對帳
@@ -76,7 +76,7 @@ rumps 換成 Web 殼。
 
 ## 狀態表
 
-`AppState` 定義於 `src/lune/readiness.py:16`，目前有九個值。本規格新增第十個。
+`AppState` 定義於 `src/lune/readiness.py`，目前有十個值；`degraded_llm` 已加入 Literal，但還沒有任何程式會設定它。
 
 | 狀態 | 顏色語意 | 通話列文案 | 橫幅文案 | 使用者動作 |
 |---|---|---|---|---|
@@ -109,13 +109,13 @@ rumps 換成 Web 殼。
 
 ### 狀態的既有實作落差
 
-- `degraded_tts` 雖列於 `AppState`，但 `src/lune/pipeline/session.py:283` 的 `_idle_state()`
-  只回傳 `budget_locked` 或 `DeviceStateMachine.state`（`src/lune/audio/devices.py:10` 定義的
+- `degraded_tts` 雖列於 `AppState`，但 `src/lune/pipeline/session.py` 的 `_idle_state()`
+  只回傳 `budget_locked` 或 `DeviceStateMachine.state`（`src/lune/audio/devices.py` 的 `DeviceState` 定義的
   三個值），因此它永遠不會成為 `session.state`。目前只以
-  `src/lune/pipeline/session.py:196` 的 sticky 屬性存在。UI 若要顯示，需另接該屬性或修改
+  `src/lune/pipeline/session.py` 的 `degraded_tts` sticky 屬性存在。UI 若要顯示，需另接該屬性或修改
   `_idle_state()`。
 - `degraded_llm` 完全不存在，需新增。
-- `src/lune/app.py:12` 的 `menu_title()` 只處理 `setup_required` 與 `mic_off` 兩個值。
+- `src/lune/app.py` 已改為桌面殼進入點；原本的 `menu_title()` 已隨 rumps 形態一併移除。
 
 ## 版面
 
@@ -142,6 +142,33 @@ rumps 換成 Web 殼。
 ```
 
 - 側邊欄寬度固定，可收合。
+
+### 視窗尺寸與斷點
+
+2026-08-30 首次實機啟動後回填。以下三項為實作現況，非重新設計。
+
+| 項目 | 實作 | 位置 |
+|---|---|---|
+| Web 殼 | pywebview 6.2.1（macOS 為 WKWebView），renderer 是 bundled `file:` 頁 | `src/lune/ui/desktop.py` |
+| 預設視窗 | 1280 × 820 | `desktop.py:WINDOW_WIDTH`／`WINDOW_HEIGHT` |
+| 最小視窗 | 960 × 640（`NSWindow.setMinSize:`，已實測生效） | `desktop.py:WINDOW_MIN_SIZE` |
+| 側邊欄收合斷點 | 840 px：側邊欄改為覆蓋式抽屜，收合鍵換成漢堡鍵 | `app.css` 的 `@media (max-width: 840px)` |
+| 次要斷點 | 600 px：通話面板、橫幅、頂部列再壓縮一次 | `app.css` 的 `@media (max-width: 600px)` |
+
+**衝突，待裁決。** 最小視窗寬度 960 px 大於 840 px 斷點，`setMinSize:` 只限制使用者拖曳
+（程式呼叫 `resize()` 仍可越過，實測 840 可設定成功）。因此**使用者在原生視窗裡永遠拖不到
+這兩個斷點**，除非用 ⌘+ 放大頁面。三條路擇一：
+
+1. 把最小視窗降到 600 × 640 以下，讓兩個斷點都是真的；
+2. 保留 960 最小寬，刪掉 840／600 斷點，承認這是桌面單一版型；
+3. 保留斷點但改定位為「頁面縮放時的防護」，並在文件裡說明它不是視窗尺寸的斷點。
+
+**衝突，待裁決。** 840 px 以下的側邊欄是**覆蓋式抽屜**，而非〈版面〉所寫的「寬度固定，可收合」
+的同一個收合態：`.sidebar-toggle` 在該斷點下 `display: none`，收合／展開換成 `#mobile-sidebar-button`。
+同一份規格因此對應兩種互動模型。
+
+**衝突，待裁決。** 840 px 以下 `.device-button span:last-child` 被隱藏，音訊裝置只剩一顆無文字的
+圓點，與「音訊裝置狀態常駐於主區頂部列」的意圖不符。
 - 音訊裝置狀態常駐於主區頂部列，不放側邊欄。
 - 未通話時不顯示常駐麥克風指示燈：冷啟動麥克風關閉（`docs/project-decisions.md`），
   沒在收音卻放一顆燈只會製造焦慮。若日後改為「不通話也待命」，此決定必須推翻。
@@ -158,9 +185,28 @@ rumps 換成 Web 殼。
 
 展開與收合之間為同一 DOM 元件的變形，不是畫面切換。狀態點在兩態中是同一顆。
 
+### 通話中切換 thread 的唯讀呈現
+
+2026-08-30 實機驗證後回填。切到非通話中的 thread 時，四件事同時發生：
+
+| 元素 | 呈現 |
+|---|---|
+| 通話面板 | 留在原處、維持原本的展開／收合態；通話仍綁在原 thread |
+| 主區橫幅 | 「通話仍在「<原 thread 標題>」進行中；這個對話目前只能閱讀。」＋一顆「回到通話」 |
+| 輸入框 | `disabled`，placeholder 換成「這個對話正在唯讀瀏覽」 |
+| 頂部列 | 「打給 Lune」換成「回到通話」；「重新命名」隱藏 |
+
+**衝突，待裁決。** 該橫幅目前套用黃色調（`.readonly-banner`），但〈狀態表〉的黃色定義是
+「還能修，而且需要使用者離開座位做事」。唯讀瀏覽既非異常也不需要使用者動手，佔用黃色會稀釋
+三級色彩語言。建議改為中性／灰，或另立一級「純資訊」。
+
+**衝突，待裁決。** 輸入框已 `disabled`，但下方輔助文字仍是「通話中送出文字會直接打斷她。」，
+與眼前不能打字的事實矛盾。唯讀態需要自己的一句文案。
+
 ## 第一次啟動
 
-`src/lune/readiness.py:35` 與 `src/lune/config.py:132` 共會產生十一個 reason code，其中
+`src/lune/readiness.py` 的 `check_readiness()` 與 `src/lune/config.py` 的
+`validate_private_setup()` 共會產生十一個 reason code，其中
 兩組互斥、由 `models.provider` 決定：
 
 | 類別 | reason code |
@@ -216,8 +262,8 @@ downloader，所以介面只能指出缺什麼、指向哪個目錄，不能代�
 
 ## 記憶面板
 
-資料來源為 `src/lune/memory/store.py:454` 的 `list_memories()`，刪除為
-`src/lune/memory/store.py:463` 的 `forget_memory(exact_id)`。
+資料來源為 `src/lune/memory/store.py` 的 `list_memories()`，刪除為
+`src/lune/memory/store.py` 的 `forget_memory(exact_id)`。
 
 - **依來源分組，不依時間。** 分為「你叫她記住的」與「她自己注意到的」，對應
   `StoredMemory.source`。這是使用者心裡最在意的分界：前者是委託，後者是觀察，
@@ -292,21 +338,21 @@ downloader，所以介面只能指出缺什麼、指向哪個目錄，不能代�
 
 | 缺口 | 目前狀況 | 位置 |
 |---|---|---|
-| `degraded_llm` 狀態 | 不存在（測試階段也不需要） | `src/lune/readiness.py:16` |
-| `degraded_tts` 不可達 | sticky 屬性不進 `_idle_state()` | `src/lune/pipeline/session.py:283` |
-| 文字輸入入口 | 只有 `handle_audio()`，需加 `submit_text()` | `src/lune/pipeline/session.py:227` |
-| 文字訊息落庫條件 | 綁音訊播放確認，靜音時無事件 | `src/lune/memory/store.py:195` |
-| `config_missing` 自我修復 | **已接**：第一次啟動寫入預設檔；`config_invalid` 另走修復卡 | `src/lune/readiness.py:40`、`src/lune/ui/runtime.py:431` |
+| `degraded_llm` 狀態 | 名稱已在 `AppState` 內，但沒有任何程式會設定它（測試階段也不需要） | `src/lune/readiness.py` |
+| `degraded_tts` 不可達 | sticky 屬性不進 `_idle_state()` | `src/lune/pipeline/session.py` |
+| 文字輸入入口 | **已接**：`submit_text()` 與語音共用同一條 fenced turn path，文字送出即插話 | `src/lune/pipeline/session.py` |
+| 文字訊息落庫條件 | **已接**：關閉朗讀時由 `append_assistant_text_delivery()` 逐句落庫 | `src/lune/memory/store.py` |
+| `config_missing` 自我修復 | **已接**：第一次啟動寫入預設檔；`config_invalid` 另走修復卡 | `src/lune/readiness.py`、`src/lune/ui/runtime.py` |
 | 本機 LLM provider | **已接**：registry、pipeline 與 release 預設皆已切換；實體 gate 未跑 | `src/lune/llm/local_qwen.py` |
-| 本機組成的第一次啟動 | 步驟 1' 與兩個新 reason code 尚無介面 | `src/lune/readiness.py:46` |
-| authenticated WebSocket IPC | **已接**：一次性 token 與單一 client；`message_added`／`thread_updated`／`memory_updated` 已有發送端，snapshot 退為對帳 | `src/lune/ipc/server.py`、`src/lune/engine.py:717` |
-| `get_status` | **已接** | `src/lune/ui/runtime.py:211` |
+| 本機組成的第一次啟動 | 步驟 1' 與兩個新 reason code 尚無介面 | `src/lune/readiness.py` |
+| authenticated WebSocket IPC | **已接**：一次性 token 與單一 client；`message_added`／`thread_updated`／`memory_updated` 已有發送端，snapshot 退為對帳 | `src/lune/ipc/server.py`、`src/lune/engine.py` 的 `run_ui_ipc()` |
+| `get_status` | **已接** | `src/lune/ui/runtime.py` |
 | 訊息上的記憶標記 | **已接**：檢索 id 由 enricher 保留、隨 turn 提交寫入、`memory_ids` 兩條通道共用；點擊行為仍未定 | `src/lune/pipeline/enricher.py`、`src/lune/memory/store.py`、`src/lune/ui/runtime.py` |
-| `budget_changed` | 名稱在 `EVENT_NAMES` 內，但沒有發送端，`app.js` 也沒有對應分支 | `src/lune/ipc/contracts.py:58` |
-| Web 殼 | 技術棧已定，選型未定 | `setup.py` |
-| `LSUIElement` | 仍為 `True`，須改 `False` | `setup.py:15` |
-| 應用程式圖示 | `iconfile` 為 `None`，repo 無任何圖形資產 | `setup.py:11` |
-| UI 語言 | 現有字串為英文，本規格全為繁中 | `src/lune/app.py:14`、`setup.py:16` |
+| `budget_changed` | 名稱在 `EVENT_NAMES` 內，但沒有發送端，`app.js` 也沒有對應分支 | `src/lune/ipc/contracts.py` |
+| Web 殼 | **已定案**：pywebview 6.2.1，首次實機啟動已通過（一次性 token 經 JS bridge 交付、WebSocket 接上、本機 Qwen 完成一輪對話） | `src/lune/ui/desktop.py` |
+| `LSUIElement` | **已改**：plist 已是 `False`，App 有 Dock 圖示與視窗 | `setup.py` |
+| 應用程式圖示 | `iconfile` 為 `None`，repo 無任何圖形資產 | `setup.py` |
+| UI 語言 | **已接**：內嵌 Web UI 與 `NSMicrophoneUsageDescription` 皆為繁中 | `src/lune/ui/static/`、`setup.py` |
 
 ### 本機 LLM 備援的前提
 
@@ -322,14 +368,19 @@ hybrid：OpenAI 為主，本機為備援。
 
 ## 尚未決定
 
-- Web 殼選型：pywebview 或 Tauri。
+2026-08-30 首次實機啟動後，Web 殼選型、視窗最小尺寸與收合斷點、通話中唯讀呈現三項已定案並
+回填至上文；它們留下的三個衝突改列於〈視窗尺寸與斷點〉與〈通話中切換 thread 的唯讀呈現〉，
+標為「待裁決」。以下為仍未決定的項目。
+
 - `budget_locked` 的顏色歸類。本機備援使其從死路變為分岔，是否仍屬「停了」需再議。
   測試階段不會遇到，可留到雲端接回時再定。
-- 測試階段的通話列是否要有任何「跑在本機」的常駐提示。目前傾向不要：那是現況不是異常，
-  但使用者可能仍想知道自己在跟哪一邊講話。
+- 測試階段的通話列是否要有任何「跑在本機」的常駐提示。**實作目前照「不要」執行**：通話面板
+  只有狀態、計時與波形；「只在這台電腦上」的陳述放在側邊欄底部與設定頁。此決定尚未正式定案。
 - 訊息上「她想起了一件事」標記**點擊後**的行為。資料鏈已接，標記會真的出現，但點下去目前只切到
-  記憶面板、不高亮任何一筆。要做高亮就得連同記憶面板的 16 筆上限一起決定：超出上限的記憶就算被
-  標記指到，也不在那份清單裡。
-- 視窗最小尺寸與側邊欄收合的斷點。
+  記憶面板、不高亮任何一筆（`app.js` 的 `show-memories` 分支收下 `memoryId` 卻沒有用）。
+  要做高亮就得連同記憶面板的 16 筆上限一起決定：超出上限的記憶就算被標記指到，也不在那份清單裡。
 - 應用程式圖示與選單列圖示的視覺設計。
-- 通話中切換 thread 時，唯讀狀態的視覺呈現方式。
+- 異常狀態的兩組文案是否要真的分開。〈狀態表〉為每個狀態各寫了「通話列文案」與「橫幅文案」，
+  但 `app.js` 的 `STATUS_COPY` 每個狀態只有一組 `label`／`subtitle`，兩處共用。實機上
+  `paused_unsafe_output` 的橫幅標題因此是通話列的「切到內建喇叭了，先停一下」，而不是規格寫的
+  「接上耳機才能繼續」。要嘛擴成兩組，要嘛把〈狀態表〉收斂成一組。

@@ -1,8 +1,9 @@
 # Lune 即時語音陪伴
 
-Lune 是一個 local-first、原生支援 Apple Silicon 的 macOS 選單列語音陪伴。
-語音、逐字稿、人格、記憶、關係狀態與私人聲線資產都留在 Mac；只有產生回覆
-所需的最少文字內容會傳送給 OpenAI。
+Lune 是一個 local-first、原生支援 Apple Silicon 的 macOS 語音陪伴桌面 App
+（左側邊欄 + 主區的視窗應用程式）。語音、逐字稿、人格、記憶、關係狀態與私人
+聲線資產都留在 Mac。測試階段預設使用本機模型，對話完全不連外；改用雲端時，
+也只有產生回覆所需的最少文字內容會傳送給 OpenAI。
 
 本專案目前是持續開發中的 MVP。每次冷啟動時麥克風預設關閉；若輸出切換為
 Mac 內建喇叭則自動暫停，因為 MVP 尚未實作聲學回音消除（AEC）。未放置私人
@@ -260,6 +261,9 @@ uv run mypy src/lune
 uv run pytest
 uv run python scripts/secret_scan.py
 ```
+
+上面是常用的一小段；完整公開 gate 的清單在 [`AGENTS.md`](AGENTS.md)，那份文件也是給
+coding agent 的共用脈絡（架構、權威來源、不可破壞的不變式、驗收矩陣）。
 
 硬體與模型驗收 gate 必須明確選擇後才會執行。Mock 測試與套件 self-test 不下載
 模型，也不使用 API key。詳細狀態與決策請見：

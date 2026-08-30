@@ -5,7 +5,8 @@
 
 ## 產品邊界
 
-- 平台為 macOS Apple Silicon，採選單列 UI 與 local-first 架構。
+- 平台為 macOS Apple Silicon，local-first 架構。UI 形態已由選單列常駐改為視窗應用程式，
+  規格見 `docs/ui-spec.md`。
 - 級聯語音路徑為：本機 VAD → 本機 Whisper → 純文字 OpenAI Responses → 本機 TTS。
 - MVP 支援耳機，但沒有聲學回音消除；切換至內建喇叭時暫停聆聽。
 - 每次冷啟動時麥克風保持關閉。不實作 login item、雲端同步、telemetry 或外部排程訊息。
